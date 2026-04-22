@@ -1,0 +1,12 @@
+discord.py
+python-telegram-bot
+openai
+google-generativeai
+pymongo
+motor
+fastapi
+uvicorn
+python-dotenv
+pydantic
+twilio
+python-multipart
