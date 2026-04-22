@@ -197,7 +197,7 @@ async def get_integration_status():
         return [
             {"name": "WhatsApp", "status": "CONNECTED", "platform": "whatsapp"},
             {"name": "Telegram", "status": "CONNECTED", "platform": "telegram"},
-            {"name": "Discord", "status": "DISCONNECTED", "platform": "discord"}
+            {"name": "Discord", "status": "CONNECTED", "platform": "discord"}
         ]
     return integrations
 
