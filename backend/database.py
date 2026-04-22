@@ -224,6 +224,39 @@ async def update_admin_password(email: str, new_password: str):
         {"$set": {"password": hash_password(new_password)}}
     )
 
+async def track_failed_login(email: str):
+    admin = await admins_collection.find_one({"email": email})
+    if not admin:
+        return
+    
+    attempts = admin.get("failed_login_attempts", 0) + 1
+    update_data = {"failed_login_attempts": attempts}
+    
+    # Lock account after 5 failed attempts
+    if attempts >= 5:
+        lockout_duration = 15 # 15 minutes lockout
+        update_data["lockout_until"] = datetime.utcnow() + timedelta(minutes=lockout_duration)
+        print(f"🔒 Account locked: {email} for {lockout_duration} mins")
+    
+    await admins_collection.update_one({"email": email}, {"$set": update_data})
+
+async def reset_failed_login(email: str):
+    await admins_collection.update_one(
+        {"email": email}, 
+        {"$set": {"failed_login_attempts": 0}, "$unset": {"lockout_until": ""}}
+    )
+
+async def is_account_locked(email: str):
+    admin = await admins_collection.find_one({"email": email})
+    if not admin:
+        return False, None
+    
+    lockout_until = admin.get("lockout_until")
+    if lockout_until and datetime.utcnow() < lockout_until:
+        return True, lockout_until
+    
+    return False, None
+
 async def save_otp(email: str, otp: str):
     # Expire in 10 minutes
     expires_at = datetime.utcnow() + timedelta(minutes=10)

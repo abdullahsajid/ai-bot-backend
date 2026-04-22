@@ -25,9 +25,23 @@ from .database import (
     get_admin_user, update_admin_password, verify_password, 
     create_initial_admin, create_admin, get_admin_preferences, 
     update_admin_preferences, save_otp, verify_otp, add_knowledge, get_all_knowledge,
-    get_user_thread, save_user_thread, add_notification, get_notifications, clear_notifications
+    get_user_thread, save_user_thread, add_notification, get_notifications, clear_notifications,
+    is_account_locked, track_failed_login, reset_failed_login
 )
 from .bots.whatsapp import whatsapp_bot
+
+import logging
+
+# Setup Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("server.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("PulseAI")
 
 # Security Settings
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key_here")
@@ -138,6 +152,11 @@ class PreferencesRequest(BaseModel):
     notifications: bool
     auditLog: bool
 
+class Verify2FARequest(BaseModel):
+    email: str
+    otp: str
+    recaptcha_token: Optional[str] = None
+
 # Auth Utilities
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -159,6 +178,40 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
     return username
+
+async def send_otp_email(to_email: str, otp: str):
+    gmail_user = os.getenv("GMAIL_USER")
+    gmail_pass = os.getenv("GMAIL_PASS")
+    
+    if not gmail_user or not gmail_pass:
+        logger.warning(f"⚠️ [DEV MODE] OTP for {to_email} is: {otp}")
+        return True
+
+    msg = MIMEMultipart()
+    msg['From'] = f"Pulse AI Security <{gmail_user}>"
+    msg['To'] = to_email
+    msg['Subject'] = "Your Pulse AI Verification Code"
+
+    body = f"""
+    <div style="font-family: sans-serif; padding: 20px; color: #333;">
+        <h2 style="color: #a855f7;">Security Verification</h2>
+        <p>A login attempt was made for your Pulse AI account.</p>
+        <p>Your 6-digit verification code is:</p>
+        <h1 style="background: #f3f4f6; padding: 10px; display: inline-block; letter-spacing: 5px;">{otp}</h1>
+        <p>This code expires in 10 minutes. If you did not request this, please change your password immediately.</p>
+    </div>
+    """
+    msg.attach(MIMEText(body, 'html'))
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(gmail_user, gmail_pass)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return False
 
 # --- Public Endpoints ---
 
@@ -207,11 +260,47 @@ async def app_chat_webhook(request: AppChatRequest):
 
 @app.post("/auth/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await get_admin_user(form_data.username) 
+    email = form_data.username
+    
+    # 1. Check for Account Lockout
+    is_locked, locked_until = await is_account_locked(email)
+    if is_locked:
+        wait_mins = int((locked_until - datetime.utcnow()).total_seconds() / 60)
+        raise HTTPException(status_code=403, detail=f"Account locked due to multiple failed attempts. Try again in {max(1, wait_mins)} minutes.")
+
+    user = await get_admin_user(email) 
+    
+    # 2. Verify Password
     if not user or not verify_password(form_data.password, user["password"]):
+        await track_failed_login(email)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
-    access_token = create_access_token(data={"sub": user["email"]})
-    return {"access_token": access_token, "token_type": "bearer"}
+    
+    # 3. Successful password, clear failures
+    await reset_failed_login(email)
+    
+    # 4. Generate 2FA OTP
+    otp = ''.join(random.choices(string.digits, k=6))
+    await save_otp(email, otp)
+    await send_otp_email(email, otp)
+    
+    return {
+        "status": "2fa_required", 
+        "message": "Step 1/2 complete. Please enter the verification code sent to your email.",
+        "email": email
+    }
+
+@app.post("/auth/verify-2fa")
+async def verify_login_2fa(request: Verify2FARequest):
+    # Optional: Verify Recaptcha here
+    if request.recaptcha_token:
+        # verify_recaptcha(request.recaptcha_token)
+        pass
+
+    if await verify_otp(request.email, request.otp):
+        access_token = create_access_token(data={"sub": request.email})
+        return {"access_token": access_token, "token_type": "bearer", "status": "success"}
+    
+    raise HTTPException(status_code=400, detail="Invalid or expired verification code")
 
 @app.post("/auth/signup")
 async def signup(request: SignupRequest):
