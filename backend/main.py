@@ -272,7 +272,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = await get_admin_user(email) 
     
     # 2. Verify Password
-    if not user or not verify_password(form_data.password, user["password"]):
+    if not user or not verify_password(password, user["password"]):
         await track_failed_login(email)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
