@@ -15,6 +15,7 @@ import string
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from bs4 import BeautifulSoup
 
 from .ai_engine import ai_engine
 from .database import (
@@ -431,6 +432,41 @@ async def get_knowledge():
     docs = await get_all_knowledge()
     for d in docs: d["id"] = str(d.pop("_id"))
     return docs
+
+class ScrapeRequest(BaseModel):
+    url: str
+
+@app.post("/scrape", dependencies=[Depends(get_current_user)])
+async def scrape_website(request: ScrapeRequest):
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.get(request.url, timeout=15.0)
+            if response.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to reach website: {response.status_code}")
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Clean up: remove script and style elements
+            for script_or_style in soup(["script", "style"]):
+                script_or_style.extract()
+            
+            # Get text
+            text = soup.get_text(separator='\n')
+            
+            # Basic cleaning: break into lines and remove leading/trailing whitespace
+            lines = (line.strip() for line in text.splitlines())
+            # Break multi-headlines into a line each
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            # Drop blank lines
+            clean_text = '\n'.join(chunk for chunk in chunks if chunk)
+            
+            title = soup.title.string if soup.title else request.url
+            await add_knowledge(f"Scraped: {title}", clean_text)
+            
+            return {"status": "success", "title": title}
+    except Exception as e:
+        logger.error(f"Scraping failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/config", dependencies=[Depends(get_current_user)])
 async def get_config_endpoint():
