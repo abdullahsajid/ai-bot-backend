@@ -329,6 +329,11 @@ async def internal_notify(data: dict):
     message = data.get("message")
     response = data.get("response", "AI Processing...")
     
+    # 1. Save to Database so it persists when dashboard is closed
+    notif_text = f"New {platform} msg from {user_id}: {message[:30]}..."
+    await add_notification(platform, user_id, notif_text)
+
+    # 2. Broadcast to active dashboard viewers
     await manager.broadcast({
         "type": "new_message",
         "platform": platform,
