@@ -203,7 +203,7 @@ async def send_otp_email(to_email: str, otp: str):
     """
     msg.attach(MIMEText(body, 'html'))
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server = smtplib.SMTP('smtp.gmail.com', 587, timeout=5)
         server.starttls()
         server.login(gmail_user, gmail_pass)
         server.send_message(msg)
@@ -211,6 +211,8 @@ async def send_otp_email(to_email: str, otp: str):
         return True
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
+        # In case of network error, we don't crash, we just log the OTP for the admin
+        logger.warning(f"⚠️ [FIREWALL ALERT] Port 587 might be blocked. OTP is: {otp}")
         return False
 
 # --- Public Endpoints ---
