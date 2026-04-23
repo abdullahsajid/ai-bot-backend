@@ -5,10 +5,13 @@ google-generativeai
 pymongo
 motor
 fastapi
-uvicorn
+uvicorn[standard]
+websockets
 python-dotenv
 pydantic
 twilio
 python-multipart
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==4.0.1
+httpx

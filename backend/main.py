@@ -281,15 +281,12 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     # 3. Successful password, clear failures
     await reset_failed_login(email)
     
-    # 4. Generate 2FA OTP
-    otp = ''.join(random.choices(string.digits, k=6))
-    await save_otp(email, otp)
-    await send_otp_email(email, otp)
-    
+    # 4. [TEST MODE] Bypass 2FA and login immediately
+    access_token = create_access_token(data={"sub": email})
     return {
-        "status": "2fa_required", 
-        "message": "Step 1/2 complete. Please enter the verification code sent to your email.",
-        "email": email
+        "access_token": access_token, 
+        "token_type": "bearer", 
+        "status": "success"
     }
 
 @app.post("/auth/verify-2fa")
