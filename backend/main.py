@@ -261,6 +261,7 @@ async def app_chat_webhook(request: AppChatRequest):
 @app.post("/auth/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     email = form_data.username
+    password = form_data.password[:72] # Bcrypt limit
     
     # 1. Check for Account Lockout
     is_locked, locked_until = await is_account_locked(email)
@@ -568,6 +569,15 @@ async def get_history_endpoint(limit: int = 50):
     history = await db["chat_history"].find().sort("timestamp", -1).to_list(length=limit)
     for entry in history: entry["id"] = str(entry.pop("_id"))
     return history
+
+@app.get("/notifications", dependencies=[Depends(get_current_user)])
+async def get_notifications_endpoint():
+    return await get_notifications()
+
+@app.delete("/notifications", dependencies=[Depends(get_current_user)])
+async def clear_notifications_endpoint():
+    await clear_notifications()
+    return {"status": "success"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
