@@ -19,7 +19,21 @@ class MyDiscordBot(commands.Bot):
         print('------')
 
     async def on_message(self, message):
-        if message.author == self.user:
+        # 1. Ignore yourself and other bots
+        if message.author.bot:
+            return
+
+        # 2. Ignore log channels (administrative channels)
+        log_keywords = ["logs", "audit", "admin-only", "welcome"]
+        channel_name = message.channel.name.lower()
+        if any(key in channel_name for key in log_keywords):
+            return
+
+        # 3. Only respond if mentioned or in a DM
+        is_dm = message.guild is None
+        is_mentioned = self.user in message.mentions
+        
+        if not is_dm and not is_mentioned:
             return
 
         if message.content.startswith("!"):
@@ -30,7 +44,11 @@ class MyDiscordBot(commands.Bot):
         user_id = str(message.author.id)
         channel_id_str = str(message.channel.id)
         composite_id = f"{user_id}:{channel_id_str}"
+        
+        # Clean the message (remove the mention tag)
         user_message = message.content
+        if self.user in message.mentions:
+            user_message = user_message.replace(f'<@!{self.user.id}>', '').replace(f'<@{self.user.id}>', '').strip()
 
         # Capture user identity
         username = message.author.display_name or message.author.name
