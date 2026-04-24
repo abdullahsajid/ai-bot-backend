@@ -17,6 +17,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = str(user.id)
     user_message = update.message.text
+    # Check Allowed Groups lock
+    allowed_groups = os.getenv("ALLOWED_TELEGRAM_GROUPS")
+    chat_id_str = str(update.effective_chat.id)
+    if allowed_groups and update.effective_chat.type in ['group', 'supergroup']:
+        allowed_list = [g.strip() for g in allowed_groups.split(',')]
+        if chat_id_str not in allowed_list:
+            print(f"Ignored message from unauthorized group: {chat_id_str}")
+            return
 
     # Capture user identity
     # Capture user identity (Format: Name (@username) or Name (ID))

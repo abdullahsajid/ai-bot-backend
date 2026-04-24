@@ -23,18 +23,25 @@ class MyDiscordBot(commands.Bot):
         if message.author.bot:
             return
 
-        # 2. Ignore log channels (administrative channels)
-        log_keywords = ["logs", "audit", "admin-only", "welcome"]
+        # 1.5 Check Allowed Servers lock
+        # allowed_servers = os.getenv("ALLOWED_DISCORD_SERVERS")
+        # if allowed_servers and message.guild is not None:
+        #     allowed_list = [s.strip() for s in allowed_servers.split(',')]
+        #     if str(message.guild.id) not in allowed_list:
+        #         print(f"Ignored message from unauthorized server: {message.guild.id}")
+        #         return
+
+        # 2. Ignore log channels (administrative and read-only channels)
+        log_keywords = [
+            "logs", "audit", "admin", "welcome", "rules", 
+            "announcements", "alert", "start-here", "faq", "links", "verify","official-links","server-logs","discord-updates"
+            "discord-updates","discord-updates","staff-announcements"
+        ]
         channel_name = message.channel.name.lower()
         if any(key in channel_name for key in log_keywords):
             return
 
-        # 3. Only respond if mentioned or in a DM
-        is_dm = message.guild is None
-        is_mentioned = self.user in message.mentions
-        
-        if not is_dm and not is_mentioned:
-            return
+
 
         if message.content.startswith("!"):
             await self.process_commands(message)
