@@ -222,8 +222,14 @@ async def send_otp_email(to_email: str, otp: str):
 async def root():
     return {"status": "Pulse AI API is running"}
 
+from fastapi import Header
+
 @app.post("/api/chat")
-async def app_chat_webhook(request: AppChatRequest):
+async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(None)):
+    expected_secret = os.getenv("APP_SECRET", "LumoMobileApp_Secret_2026")
+    if x_app_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized access. Invalid App Secret.")
+
     user_id = request.user_id
     user_message = request.message
     platform = "app"
