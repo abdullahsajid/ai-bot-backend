@@ -181,39 +181,41 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     return username
 
 async def send_otp_email(to_email: str, otp: str):
-    gmail_user = os.getenv("GMAIL_USER")
-    gmail_pass = os.getenv("GMAIL_PASS")
+    # Use Resend API (Bypasses DigitalOcean port blocks)
+    api_key = "re_6tZW8cri_KhTzKiV5jbJP2p3oUa7Tei72"
+    sender_email = "security@lumopulse.us" # Verified domain in Resend
     
-    if not gmail_user or not gmail_pass:
-        logger.warning(f"⚠️ [DEV MODE] OTP for {to_email} is: {otp}")
-        return True
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "from": f"Lumo Security <{sender_email}>",
+        "to": [to_email],
+        "subject": "Your Pulse AI Verification Code",
+        "html": f"""
+            <div style="font-family: sans-serif; padding: 20px; color: #333;">
+                <h2 style="color: #a855f7;">Security Verification</h2>
+                <p>Your 6-digit verification code is:</p>
+                <h1 style="background: #f3f4f6; padding: 10px; display: inline-block; letter-spacing: 5px;">{otp}</h1>
+                <p>This code expires in 10 minutes.</p>
+            </div>
+        """
+    }
 
-    msg = MIMEMultipart()
-    msg['From'] = f"Pulse AI Security <{gmail_user}>"
-    msg['To'] = to_email
-    msg['Subject'] = "Your Pulse AI Verification Code"
-
-    body = f"""
-    <div style="font-family: sans-serif; padding: 20px; color: #333;">
-        <h2 style="color: #a855f7;">Security Verification</h2>
-        <p>A login attempt was made for your Pulse AI account.</p>
-        <p>Your 6-digit verification code is:</p>
-        <h1 style="background: #f3f4f6; padding: 10px; display: inline-block; letter-spacing: 5px;">{otp}</h1>
-        <p>This code expires in 10 minutes. If you did not request this, please change your password immediately.</p>
-    </div>
-    """
-    msg.attach(MIMEText(body, 'html'))
     try:
-        server = smtplib.SMTP('smtp.gmail.com', 587, timeout=5)
-        server.starttls()
-        server.login(gmail_user, gmail_pass)
-        server.send_message(msg)
-        server.quit()
-        return True
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, json=payload, timeout=10)
+            if res.status_code in [200, 201]:
+                return True
+            else:
+                logger.error(f"Resend Error: {res.text}")
+                # Fallback: Still print to logs so you can log in if API fails
+                logger.warning(f"⚠️ [API FAIL] OTP for {to_email}: {otp}")
+                return False
     except Exception as e:
-        logger.error(f"Failed to send email: {e}")
-        # In case of network error, we don't crash, we just log the OTP for the admin
-        logger.warning(f"⚠️ [FIREWALL ALERT] Port 587 might be blocked. OTP is: {otp}")
+        logger.error(f"Failed to send email via Resend: {e}")
         return False
 
 # --- Public Endpoints ---
