@@ -200,6 +200,12 @@ async def get_integration_status():
             {"name": "Telegram", "status": "CONNECTED", "platform": "telegram"},
             {"name": "Discord", "status": "CONNECTED", "platform": "discord"}
         ]
+    
+    # Sanitize for JSON (convert ObjectId to string)
+    for i in integrations:
+        if "_id" in i:
+            i["_id"] = str(i["_id"])
+            
     return integrations
 
 async def update_integration_status(platform, status):
