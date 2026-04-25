@@ -72,11 +72,13 @@ class MyDiscordBot(commands.Bot):
         except Exception:
             pass
 
-        # 1. Check for human takeover
+        # 1. Check for human takeover or global AI switch
+        from ..database import is_platform_active
+        is_active = await is_platform_active("discord")
         is_human = await get_human_takeover_status(composite_id)
         
-        if is_human:
-            await save_chat_history("discord", composite_id, user_message, "[HUMAN_TAKOVER_ACTIVE]", username=username, avatar_url=avatar_url)
+        if not is_active or is_human:
+            await save_chat_history("discord", composite_id, user_message, "[AI_DISABLED_OR_HUMAN_ACTIVE]", username=username, avatar_url=avatar_url)
             return
 
         # 2. Get context from DB

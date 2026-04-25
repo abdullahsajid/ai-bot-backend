@@ -26,30 +26,31 @@ class AIEngine:
         self.system_prompt = "You are Pulse AI, a professional and high-performance AI assistant."
 
     async def generate_response(self, platform, user_id, user_message, context=None, faqs=None, knowledge=None, thread_id=None):
-        # 1. Check FAQs first (Instant match)
-        if faqs:
-            query = user_message.lower().strip().strip('?')
-            for faq in faqs:
-                if faq['question'].lower().strip().strip('?') in query or query in faq['question'].lower():
-                    return faq['answer']
-
-        # 2. Build Enriched System Prompt (Manual RAG)
+        # 1. Build Enriched System Prompt (RAG - Retrieval Augmented Generation)
         enriched_prompt = self.system_prompt
-        print(f"🤖 Generating response for {platform}:{user_id} using prompt: {enriched_prompt[:40]}...")
+        
+        # Inject FAQs as high-priority context for Semantic Matching
+        if faqs:
+            enriched_prompt += "\n\n### OFFICIAL FREQUENTLY ASKED QUESTIONS (FAQs):\n"
+            for faq in faqs:
+                enriched_prompt += f"Q: {faq['question']}\nA: {faq['answer']}\n\n"
+            enriched_prompt += "If a user's question matches any of the above FAQs (even if worded differently), use the official answer provided."
+
+        # Inject Knowledge Base documents
         if knowledge:
             relevant_facts = []
             keywords = user_message.lower().split()
-            # Find the most relevant chunks from your uploaded docs
             for doc in knowledge:
                 content = doc.get('content', '').lower()
-                # If message contains words from the document, include that document
                 if any(word in content for word in keywords if len(word) > 3):
                     relevant_facts.append(doc.get('content'))
             
             if relevant_facts:
-                enriched_prompt += "\n\n### ADDITIONAL CONTEXT FROM YOUR DOCUMENTS:\n"
-                enriched_prompt += "\n---\n".join(relevant_facts[:3]) # Take top 3 relevant docs
-                enriched_prompt += "\n---\nUse the above context to answer accurately."
+                enriched_prompt += "\n\n### ADDITIONAL CONTEXT FROM KNOWLEDGE BASE:\n"
+                enriched_prompt += "\n---\n".join(relevant_facts[:5])
+                enriched_prompt += "\n---\nUse the above documents for detailed context if the FAQs do not cover the user's query."
+
+        print(f"🤖 Generating AI response for {platform}:{user_id}...")
 
         # 3. Call Provider
         if self.preferred_provider == "openai" and openai_client:

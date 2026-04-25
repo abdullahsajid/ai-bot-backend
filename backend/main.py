@@ -251,6 +251,11 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
     faqs = await get_faqs()
     knowledge = await get_all_knowledge()
     
+    # Check if AI is active
+    from .database import is_platform_active
+    if not await is_platform_active(platform):
+        return {"response": "[AI_DISABLED_BY_ADMIN]", "status": "disabled"}
+    
     response = await ai_engine.generate_response(platform, user_id, user_message, context, faqs=faqs, knowledge=knowledge)
 
     await save_chat_history(platform, user_id, user_message, response)
@@ -553,7 +558,11 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
         await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=ProfileName)
         await manager.broadcast({"type": "new_message", "platform": platform, "user_id": user_id, "message": Body, "response": "[HUMAN_TAKOVER_ACTIVE]"})
         return {"status": "human"}
-    
+    # Check if AI is active
+    from .database import is_platform_active
+    if not await is_platform_active(platform):
+        return {"status": "disabled"}
+        
     response = await ai_engine.generate_response(platform, user_id, Body, await get_user_context(platform, user_id), faqs=await get_faqs(), knowledge=await get_all_knowledge())
     whatsapp_bot.send_message(user_id, response)
     await save_chat_history(platform, user_id, Body, response, username=ProfileName)
@@ -582,7 +591,27 @@ async def send_manual(request: ManualResponseRequest):
 
         elif request.platform == 'discord':
             token = os.getenv("DISCORD_TOKEN")
-            target_id = request.user_id.split(":")[1] if ":" in request.user_id else request.user_id
+            
+            # Fetch the latest message for this user to find which channel to reply to
+            from .database import db
+            latest_msg = await db["chat_history"].find_one(
+                {"platform": "discord", "user_id": request.user_id},
+                sort=[("timestamp", -1)]
+            )
+            channel_id = latest_msg.get("channel_id") if latest_msg else None
+            
+            if channel_id:
+                target_id = channel_id
+            else:
+                # Fallback: Attempt to open a DM channel if no channel_id exists
+                async with httpx.AsyncClient() as client:
+                    headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+                    payload = {"recipient_id": request.user_id}
+                    res = await client.post("https://discord.com/api/v10/users/@me/channels", headers=headers, json=payload)
+                    if res.status_code == 200:
+                        target_id = res.json()["id"]
+                    else:
+                        target_id = request.user_id
                 
             async with httpx.AsyncClient() as client:
                 url = f"https://discord.com/api/v10/channels/{target_id}/messages"

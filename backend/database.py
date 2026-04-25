@@ -195,6 +195,7 @@ async def get_integration_status():
     integrations = await integrations_collection.find().to_list(length=10)
     if not integrations:
         return [
+            {"name": "Master AI Switch", "status": "CONNECTED", "platform": "global"},
             {"name": "WhatsApp", "status": "CONNECTED", "platform": "whatsapp"},
             {"name": "Telegram", "status": "CONNECTED", "platform": "telegram"},
             {"name": "Discord", "status": "CONNECTED", "platform": "discord"}
@@ -207,6 +208,19 @@ async def update_integration_status(platform, status):
         {"$set": {"status": status}},
         upsert=True
     )
+
+async def is_platform_active(platform):
+    # Check Global switch first
+    global_int = await integrations_collection.find_one({"platform": "global"})
+    if global_int and global_int.get("status") == "DISCONNECTED":
+        return False
+        
+    # Check specific platform switch
+    plat_int = await integrations_collection.find_one({"platform": platform})
+    if plat_int and plat_int.get("status") == "DISCONNECTED":
+        return False
+        
+    return True
 
 # --- Auth Functions ---
 def hash_password(password: str):
