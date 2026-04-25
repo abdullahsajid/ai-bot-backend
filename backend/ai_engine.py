@@ -71,7 +71,7 @@ class AIEngine:
             messages.append({"role": "user", "content": user_message})
 
             response = await openai_client.chat.completions.create(
-                model=self.openai_model,
+                model="gpt-5.5",
                 messages=messages,
                 tools=[{"type": "web_search"}],
                 temperature=0.7
