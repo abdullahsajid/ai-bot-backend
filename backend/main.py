@@ -272,8 +272,6 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
 
 async def verify_turnstile(token: str):
     """Verify Cloudflare Turnstile token"""
-    if token == "skipped":
-        return True # Temporarily bypass for UI fix
     secret = os.getenv("TURNSTILE_SECRET", "0x4AAAAAADDP1lRl_8Fx_ovNRnCuNz2ET4Y")
     async with httpx.AsyncClient() as client:
         res = await client.post(
