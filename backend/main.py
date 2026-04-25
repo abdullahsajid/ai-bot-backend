@@ -270,44 +270,63 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
 
     return {"response": response, "status": "success"}
 
+async def verify_turnstile(token: str):
+    """Verify Cloudflare Turnstile token"""
+    secret = os.getenv("TURNSTILE_SECRET", "0x4AAAAAADDP1lRl_8Fx_ovNRnCuNz2ET4Y")
+    async with httpx.AsyncClient() as client:
+        res = await client.post(
+            "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+            data={"secret": secret, "response": token}
+        )
+        return res.json().get("success", False)
+
 # --- Auth Endpoints ---
 
 @app.post("/auth/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    email = form_data.username
-    password = form_data.password[:72] # Bcrypt limit
+async def login(
+    username: str = Form(...),
+    password: str = Form(...),
+    captcha_token: str = Form(...)
+):
+    email = username
+    password = password[:72] # Bcrypt limit
     
-    # 1. Check for Account Lockout
+    # 1. Verify Cloudflare Captcha
+    if not await verify_turnstile(captcha_token):
+        raise HTTPException(status_code=400, detail="Security check failed. Please try again.")
+
+    # 2. Check for Account Lockout
     is_locked, locked_until = await is_account_locked(email)
     if is_locked:
         wait_mins = int((locked_until - datetime.utcnow()).total_seconds() / 60)
-        raise HTTPException(status_code=403, detail=f"Account locked due to multiple failed attempts. Try again in {max(1, wait_mins)} minutes.")
+        raise HTTPException(status_code=403, detail=f"Account locked. Try again in {max(1, wait_mins)} minutes.")
 
     user = await get_admin_user(email) 
     
-    # 2. Verify Password
+    # 3. Verify Password
     if not user or not verify_password(password, user["password"]):
         await track_failed_login(email)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
-    # 3. Successful password, clear failures
+    # 4. Success - Reset failures and start 2FA
     await reset_failed_login(email)
     
-    # 4. [TEST MODE] Bypass 2FA and login immediately
-    access_token = create_access_token(data={"sub": email})
+    # Generate and send OTP
+    otp = ''.join(random.choices(string.digits, k=6))
+    await save_otp(email, otp)
+    
+    sent = await send_otp_email(email, otp)
+    if not sent:
+        # Fallback for dev/blocked ports: log it
+        logger.warning(f"OTP for {email}: {otp}")
+    
     return {
-        "access_token": access_token, 
-        "token_type": "bearer", 
-        "status": "success"
+        "status": "2fa_required",
+        "message": "Verification code sent to your email."
     }
 
 @app.post("/auth/verify-2fa")
 async def verify_login_2fa(request: Verify2FARequest):
-    # Optional: Verify Recaptcha here
-    if request.recaptcha_token:
-        # verify_recaptcha(request.recaptcha_token)
-        pass
-
     if await verify_otp(request.email, request.otp):
         access_token = create_access_token(data={"sub": request.email})
         return {"access_token": access_token, "token_type": "bearer", "status": "success"}
