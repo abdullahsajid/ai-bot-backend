@@ -192,21 +192,24 @@ async def update_admin_preferences(email: str, notifications: bool, auditLog: bo
 
 
 async def get_integration_status():
-    integrations = await integrations_collection.find().to_list(length=10)
-    if not integrations:
-        return [
-            {"name": "Master AI Switch", "status": "CONNECTED", "platform": "global"},
-            {"name": "WhatsApp", "status": "CONNECTED", "platform": "whatsapp"},
-            {"name": "Telegram", "status": "CONNECTED", "platform": "telegram"},
-            {"name": "Discord", "status": "CONNECTED", "platform": "discord"}
-        ]
+    # Define the 4 standard platforms
+    platforms = [
+        {"name": "Master AI Switch", "status": "CONNECTED", "platform": "global"},
+        {"name": "WhatsApp", "status": "CONNECTED", "platform": "whatsapp"},
+        {"name": "Telegram", "status": "CONNECTED", "platform": "telegram"},
+        {"name": "Discord", "status": "CONNECTED", "platform": "discord"}
+    ]
     
-    # Sanitize for JSON (convert ObjectId to string)
-    for i in integrations:
-        if "_id" in i:
-            i["_id"] = str(i["_id"])
+    # Fetch existing statuses from DB
+    db_ints = await integrations_collection.find().to_list(length=10)
+    db_status_map = {item['platform']: item['status'] for item in db_ints}
+    
+    # Merge DB status into our standard list
+    for p in platforms:
+        if p['platform'] in db_status_map:
+            p['status'] = db_status_map[p['platform']]
             
-    return integrations
+    return platforms
 
 async def update_integration_status(platform, status):
     await integrations_collection.update_one(
