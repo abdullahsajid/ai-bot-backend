@@ -19,7 +19,7 @@ if gemini_key:
 
 class AIEngine:
     def __init__(self):
-        self.openai_model = "gpt-4o"
+        self.openai_model = "gpt-5.4"
         self.gemini_model = "gemini-1.5-flash"
         self.preferred_provider = os.getenv("AI_PROVIDER", "openai").lower()
         self.fallback_enabled = False
@@ -60,28 +60,34 @@ class AIEngine:
 
     async def _generate_openai(self, user_message, context, prompt):
         try:
-            messages = [{"role": "system", "content": prompt}]
-            
-            # Add conversation history
-            if context:
-                for entry in context:
-                    messages.append({"role": "user", "content": entry["message"]})
-                    messages.append({"role": "assistant", "content": entry["response"]})
-            
-            messages.append({"role": "user", "content": user_message})
-
-            response = await openai_client.chat.completions.create(
-                model=self.openai_model,
-                messages=messages,
-                temperature=0.7
+            # Using the official Responses API abstraction
+            response = await openai_client.responses.create(
+                model="gpt-5.4",
+                tools=[{"type": "web_search_preview"}],
+                input=user_message,
+                instructions=prompt
             )
-            return response.choices[0].message.content
+
+            # Extracting text from the Response object
+            # The SDK returns a structured object that we can iterate through
+            for item in response.output:
+                if item.type == "message":
+                    for content_item in item.content:
+                        if content_item.type == "output_text":
+                            return content_item.text
+            
+            return "AI responded but no text content was found."
+
         except Exception as e:
+            # If 'responses' is not found, it means the library needs an update
+            if "has no attribute 'responses'" in str(e):
+                return "Error: Your 'openai' library is outdated. Please run 'pip install --upgrade openai'."
+            
             err = str(e).lower()
             if "quota" in err or "429" in err:
                 if gemini_key and self.fallback_enabled:
                     return await self._generate_gemini(user_message, prompt, context)
-                return "⚠️ OpenAI Quota Exceeded. Please check billing or enable Gemini fallback."
+                return "⚠️ OpenAI Quota Exceeded."
             return f"Error (OpenAI): {str(e)}"
 
     async def _generate_gemini(self, user_message, prompt, context=None):
