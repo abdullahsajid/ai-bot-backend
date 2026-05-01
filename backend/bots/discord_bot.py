@@ -34,14 +34,24 @@ class MyDiscordBot(commands.Bot):
         # 2. Ignore log channels (administrative and read-only channels)
         log_keywords = [
             "logs", "audit", "admin", "welcome", "rules", 
-            "announcements", "alert", "start-here", "faq", "links", "verify","official-links","server-logs","discord-updates"
-            "discord-updates","discord-updates","staff-announcements"
+            "announcements", "alert", "start-here", "faq", "links", "verify","official-links","server-logs","discord-updates",
+            "staff-announcements"
         ]
         channel_name = message.channel.name.lower()
         if any(key in channel_name for key in log_keywords):
             return
 
-
+        # 3. Ignore if a human is replying to or tagging another human
+        # (This stops the bot from interrupting admin-to-user conversations)
+        
+        # Check if natively replying to someone else
+        if message.reference and getattr(message.reference, "resolved", None):
+            if message.reference.resolved.author.id != self.user.id:
+                return # They are replying to someone else
+                
+        # Check if manually tagging someone else (but not the bot)
+        if len(message.mentions) > 0 and self.user not in message.mentions:
+            return
 
         if message.content.startswith("!"):
             await self.process_commands(message)
