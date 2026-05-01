@@ -31,14 +31,17 @@ class MyDiscordBot(commands.Bot):
         #         print(f"Ignored message from unauthorized server: {message.guild.id}")
         #         return
 
-        # 2. Ignore log channels (administrative and read-only channels)
+        # 2. Ignore log and ticket channels/categories
         log_keywords = [
             "logs", "audit", "admin", "welcome", "rules", 
             "announcements", "alert", "start-here", "faq", "links", "verify","official-links","server-logs","discord-updates",
-            "staff-announcements"
+            "staff-announcements", "ticket"
         ]
+        
         channel_name = message.channel.name.lower()
-        if any(key in channel_name for key in log_keywords):
+        category_name = message.channel.category.name.lower() if message.channel.category else ""
+        
+        if any(key in channel_name for key in log_keywords) or any(key in category_name for key in log_keywords):
             return
 
         # 3. Ignore if a human is replying to or tagging another human
