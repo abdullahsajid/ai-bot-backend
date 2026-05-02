@@ -278,6 +278,7 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
 async def verify_turnstile(token: str):
     """Verify Cloudflare Turnstile token"""
     if not token:
+        print("DEBUG: No captcha token provided")
         return False
         
     secret = os.getenv("TURNSTILE_SECRET", "0x4AAAAAADDP1lRl_8Fx_ovNRnCuNz2ET4Y")
@@ -286,7 +287,10 @@ async def verify_turnstile(token: str):
             "https://challenges.cloudflare.com/turnstile/v0/siteverify",
             data={"secret": secret, "response": token}
         )
-        return res.json().get("success", False)
+        data = res.json()
+        if not data.get("success"):
+            print(f"DEBUG: Turnstile Failed. Response: {data}")
+        return data.get("success", False)
 
 # --- Auth Endpoints ---
 
@@ -310,6 +314,8 @@ async def login(
         raise HTTPException(status_code=403, detail=f"Account locked. Try again in {max(1, wait_mins)} minutes.")
 
     user = await get_admin_user(email) 
+    if not user:
+        print(f"DEBUG: Login failed. User not found: {email}")
     
     # 3. Verify Password
     if not user or not verify_password(password, user["password"]):
