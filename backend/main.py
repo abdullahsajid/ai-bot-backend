@@ -27,7 +27,7 @@ from .database import (
     create_initial_admin, create_admin, get_admin_preferences, 
     update_admin_preferences, save_otp, verify_otp, add_knowledge, get_all_knowledge,
     get_user_thread, save_user_thread, add_notification, get_notifications, clear_notifications,
-    is_account_locked, track_failed_login, reset_failed_login
+    is_account_locked, track_failed_login, reset_failed_login, get_all_staff, delete_admin, update_admin
 )
 from .bots.whatsapp import whatsapp_bot
 
@@ -113,6 +113,9 @@ class ChatEntry(BaseModel):
 class SignupRequest(BaseModel):
     email: str
     password: str
+    name: Optional[str] = "Staff Member"
+    role: Optional[str] = "SUPPORT AGENT"
+    permissions: Optional[List[str]] = ["chat", "knowledge"]
 
 class TakeoverRequest(BaseModel):
     is_human: bool
@@ -274,6 +277,9 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
 
 async def verify_turnstile(token: str):
     """Verify Cloudflare Turnstile token"""
+    if not token:
+        return False
+        
     secret = os.getenv("TURNSTILE_SECRET", "0x4AAAAAADDP1lRl_8Fx_ovNRnCuNz2ET4Y")
     async with httpx.AsyncClient() as client:
         res = await client.post(
@@ -330,16 +336,62 @@ async def login(
 @app.post("/auth/verify-2fa")
 async def verify_login_2fa(request: Verify2FARequest):
     if await verify_otp(request.email, request.otp):
+        # Fetch user info to return to frontend
+        user = await get_admin_user(request.email)
         access_token = create_access_token(data={"sub": request.email})
-        return {"access_token": access_token, "token_type": "bearer", "status": "success"}
+        return {
+            "access_token": access_token, 
+            "token_type": "bearer", 
+            "status": "success",
+            "user": {
+                "name": user.get("name", "Staff Member"),
+                "email": user.get("email"),
+                "role": user.get("role", "SUPPORT AGENT"),
+                "permissions": user.get("permissions", ["chat", "knowledge"])
+            }
+        }
     
     raise HTTPException(status_code=400, detail="Invalid or expired verification code")
 
 @app.post("/auth/signup")
 async def signup(request: SignupRequest):
-    success = await create_admin(request.email, request.password)
+    success = await create_admin(request.email, request.password, name=request.name, role=request.role, permissions=request.permissions)
     if not success:
         raise HTTPException(status_code=400, detail="User already exists")
+    return {"status": "success"}
+
+# --- Staff Management ---
+
+@app.get("/staff", dependencies=[Depends(get_current_user)])
+async def list_staff():
+    staff = await get_all_staff()
+    return staff
+
+@app.post("/staff/add", dependencies=[Depends(get_current_user)])
+async def add_staff(request: SignupRequest):
+    success = await create_admin(request.email, request.password, name=request.name, role=request.role, permissions=request.permissions)
+    if not success:
+        raise HTTPException(status_code=400, detail="User already exists")
+    return {"status": "success"}
+
+@app.post("/staff/update", dependencies=[Depends(get_current_user)])
+async def update_staff_route(request: SignupRequest):
+    update_data = {
+        "name": request.name,
+        "role": request.role,
+        "permissions": request.permissions
+    }
+    if request.password and request.password != "••••••••":
+        update_data["password"] = request.password
+        
+    success = await update_admin(request.email, update_data)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to update staff member")
+    return {"status": "success"}
+
+@app.delete("/staff/{email}", dependencies=[Depends(get_current_user)])
+async def delete_staff(email: str):
+    await delete_admin(email)
     return {"status": "success"}
 
 # --- WebSocket ---

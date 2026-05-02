@@ -301,20 +301,49 @@ async def verify_otp(email: str, otp: str):
     await otp_collection.delete_one({"email": email})
     return True
 
-async def create_admin(email, password):
+async def create_admin(email, password, name="Staff Member", role="SUPPORT AGENT", permissions=None):
     # Check if exists
     existing = await admins_collection.find_one({"email": email})
     if existing:
         return False
     
+    if permissions is None:
+        if role == "SUPER ADMIN":
+            permissions = ["all"]
+        else:
+            permissions = ["chat", "knowledge"] # Default permissions for support agents
+    
     admin_user = {
         "email": email,
+        "name": name,
         "password": hash_password(password),
         "created_at": datetime.utcnow(),
         "is_2fa_enabled": False,
-        "role": "SUPER ADMIN"
+        "role": role,
+        "permissions": permissions
     }
     await admins_collection.insert_one(admin_user)
+    return True
+
+async def get_all_staff():
+    cursor = admins_collection.find({}, {"password": 0}) # Don't return passwords
+    staff = await cursor.to_list(length=100)
+    for s in staff:
+        s["_id"] = str(s["_id"])
+    return staff
+
+async def delete_admin(email: str):
+    await admins_collection.delete_one({"email": email})
+    return True
+
+async def update_admin(email, update_data):
+    if "password" in update_data:
+        update_data["password"] = hash_password(update_data["password"])
+    
+    await admins_collection.update_one(
+        {"email": email},
+        {"$set": update_data}
+    )
     return True
 
 async def create_initial_admin():
@@ -323,10 +352,12 @@ async def create_initial_admin():
     if count == 0:
         admin_user = {
             "email": "admin@pulseai.com",
+            "name": "Super Admin",
             "password": hash_password("admin123"), # Default password
             "created_at": datetime.utcnow(),
             "is_2fa_enabled": False,
-            "role": "SUPER ADMIN"
+            "role": "SUPER ADMIN",
+            "permissions": ["all"]
         }
         await admins_collection.insert_one(admin_user)
         print("Initial admin created: admin@pulseai.com / admin123")
