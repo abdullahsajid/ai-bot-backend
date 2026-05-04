@@ -183,6 +183,28 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         raise credentials_exception
     return username
 
+async def require_permission(required_perm: str, email: str):
+    """Check if user has a specific permission or is an admin"""
+    user = await get_admin_user(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Access denied. User not found.")
+    
+    role = user.get("role", "SUPPORT AGENT")
+    permissions = user.get("permissions", [])
+    
+    # Bypass for admins
+    if role in ["SUPER ADMIN", "ADMIN"]:
+        return True
+    
+    # Check granular permissions
+    if "all" in permissions or required_perm in permissions:
+        return True
+        
+    raise HTTPException(
+        status_code=403, 
+        detail=f"Security access restricted. Permission '{required_perm}' required."
+    )
+
 async def send_otp_email(to_email: str, otp: str):
     # Use Resend API (Bypasses DigitalOcean port blocks)
     api_key = "re_6tZW8cri_KhTzKiV5jbJP2p3oUa7Tei72"
@@ -369,19 +391,22 @@ async def signup(request: SignupRequest):
 # --- Staff Management ---
 
 @app.get("/staff", dependencies=[Depends(get_current_user)])
-async def list_staff():
-    staff = await get_all_staff()
-    return staff
+async def list_staff(email: str = Depends(get_current_user)):
+    await require_permission("all", email)
+    return await get_all_staff()
 
 @app.post("/staff/add", dependencies=[Depends(get_current_user)])
-async def add_staff(request: SignupRequest):
+async def add_staff(request: SignupRequest, email: str = Depends(get_current_user)):
+    await require_permission("all", email)
     success = await create_admin(request.email, request.password, name=request.name, role=request.role, permissions=request.permissions)
     if not success:
         raise HTTPException(status_code=400, detail="User already exists")
     return {"status": "success"}
 
 @app.post("/staff/update", dependencies=[Depends(get_current_user)])
-async def update_staff_route(request: SignupRequest):
+async def update_staff_endpoint(request: SignupRequest, email: str = Depends(get_current_user)):
+    await require_permission("all", email)
+    # We use SignupRequest because it has the fields we need
     update_data = {
         "name": request.name,
         "role": request.role,
@@ -393,11 +418,19 @@ async def update_staff_route(request: SignupRequest):
     success = await update_admin(request.email, update_data)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update staff member")
+    
+    await manager.broadcast({
+        "type": "permission_update",
+        "email": request.email,
+        "permissions": request.permissions,
+        "role": request.role
+    })
     return {"status": "success"}
 
-@app.delete("/staff/{email}", dependencies=[Depends(get_current_user)])
-async def delete_staff(email: str):
-    await delete_admin(email)
+@app.delete("/staff/{target_email}", dependencies=[Depends(get_current_user)])
+async def delete_staff_endpoint(target_email: str, email: str = Depends(get_current_user)):
+    await require_permission("all", email)
+    await delete_admin(target_email)
     return {"status": "success"}
 
 # --- WebSocket ---
@@ -437,7 +470,10 @@ async def internal_notify(data: dict):
 # --- Admin Stats & Dashboard ---
 
 @app.get("/stats", dependencies=[Depends(get_current_user)])
-async def get_stats(interval: str = "hourly"):
+async def get_stats(interval: str = "hourly", email: str = Depends(get_current_user)):
+    # Verify permission
+    await require_permission("stats", email)
+    
     history_collection = db["chat_history"]
     
     # Get total counts efficiently
@@ -518,14 +554,16 @@ async def get_stats(interval: str = "hourly"):
     }
 
 @app.get("/conversations", dependencies=[Depends(get_current_user)])
-async def get_conversations():
+async def get_conversations(email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
     convos = await get_active_conversations()
     for c in convos: c["user_id"] = c.pop("_id")
     return convos
 
 @app.get("/messages/{platform}/{user_id}", dependencies=[Depends(get_current_user)])
-async def get_messages(platform: str, user_id: str, limit: int = 50):
-    messages = await db["chat_history"].find({"platform": platform, "user_id": str(user_id)}).sort("timestamp", -1).to_list(length=limit)
+async def get_messages(platform: str, user_id: str, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    messages = await db["chat_history"].find({"platform": platform, "user_id": user_id}).to_list(length=100)
     for m in messages: m["id"] = str(m.pop("_id"))
     return messages[::-1]
 
@@ -545,28 +583,33 @@ async def get_all_faqs():
     return faqs
 
 @app.post("/faq", dependencies=[Depends(get_current_user)])
-async def create_faq(request: FAQRequest):
+async def add_faq_endpoint(request: FAQRequest, email: str = Depends(get_current_user)):
+    await require_permission("knowledge", email)
     await add_faq(request.question, request.answer)
     return {"status": "success"}
 
 @app.put("/faq/{faq_id}", dependencies=[Depends(get_current_user)])
-async def update_faq_endpoint(faq_id: str, request: FAQRequest):
+async def update_faq_endpoint(faq_id: str, request: FAQRequest, email: str = Depends(get_current_user)):
+    await require_permission("knowledge", email)
     await update_faq(faq_id, request.question, request.answer)
     return {"status": "success"}
 
 @app.delete("/faq/{faq_id}", dependencies=[Depends(get_current_user)])
-async def delete_faq_endpoint(faq_id: str):
+async def delete_faq_endpoint(faq_id: str, email: str = Depends(get_current_user)):
+    await require_permission("knowledge", email)
     await delete_faq(faq_id)
     return {"status": "success"}
 
 @app.post("/upload", dependencies=[Depends(get_current_user)])
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), email: str = Depends(get_current_user)):
+    await require_permission("knowledge", email)
     content = (await file.read()).decode('utf-8') if file.filename.endswith('.txt') else f"[Binary: {file.filename}]"
     await add_knowledge(file.filename, content)
     return {"status": "success"}
 
 @app.get("/knowledge", dependencies=[Depends(get_current_user)])
-async def get_knowledge():
+async def get_knowledge(email: str = Depends(get_current_user)):
+    await require_permission("knowledge", email)
     docs = await get_all_knowledge()
     for d in docs: d["id"] = str(d.pop("_id"))
     return docs
@@ -575,7 +618,8 @@ class ScrapeRequest(BaseModel):
     url: str
 
 @app.post("/scrape", dependencies=[Depends(get_current_user)])
-async def scrape_website(request: ScrapeRequest):
+async def scrape_website(request: ScrapeRequest, email: str = Depends(get_current_user)):
+    await require_permission("knowledge", email)
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(request.url, timeout=15.0)
