@@ -26,6 +26,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Ignored message from unauthorized group: {chat_id_str}")
             return
 
+    # 0. Check for Mention Only mode in groups
+    from ..database import get_ai_config
+    config = await get_ai_config()
+    mention_only = config.get("telegram_mention_only", False)
+    
+    if update.effective_chat.type in ['group', 'supergroup'] and mention_only:
+        bot_user = await context.bot.get_me()
+        is_mentioned = f"@{bot_user.username}" in (user_message or "")
+        is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == bot_user.id
+        
+        if not is_mentioned and not is_reply_to_bot:
+            return # Ignore message if not mentioned and not a reply to bot
+
     # Capture user identity
     # Capture user identity (Format: Name (@username) or Name (ID))
     name = user.full_name or "Telegram User"

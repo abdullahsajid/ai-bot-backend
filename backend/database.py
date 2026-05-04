@@ -113,12 +113,18 @@ async def get_ai_config():
             "provider": "openai", 
             "system_prompt": "You are Pulse AI, a professional and high-performance AI assistant.",
             "openai_assistant_id": None,
-            "openai_vector_store_id": None
+            "openai_vector_store_id": None,
+            "telegram_mention_only": False
         }
     return config
 
-async def update_ai_config(engine, provider, fallback_enabled=True, system_prompt=None, assistant_id=None, vector_store_id=None):
-    update_data = {"engine": engine, "provider": provider, "fallback_enabled": fallback_enabled}
+async def update_ai_config(engine, provider, fallback_enabled=True, system_prompt=None, assistant_id=None, vector_store_id=None, telegram_mention_only=False):
+    update_data = {
+        "engine": engine, 
+        "provider": provider, 
+        "fallback_enabled": fallback_enabled,
+        "telegram_mention_only": telegram_mention_only
+    }
     if system_prompt: update_data["system_prompt"] = system_prompt
     if assistant_id: update_data["openai_assistant_id"] = assistant_id
     if vector_store_id: update_data["openai_vector_store_id"] = vector_store_id

@@ -129,6 +129,7 @@ class ConfigRequest(BaseModel):
     provider: str
     fallback_enabled: Optional[bool] = True
     system_prompt: Optional[str] = None
+    telegram_mention_only: Optional[bool] = False
 
 class ProfileRequest(BaseModel):
     name: str
@@ -657,8 +658,9 @@ async def get_config_endpoint():
     return config
 
 @app.post("/config", dependencies=[Depends(get_current_user)])
-async def set_config_endpoint(request: ConfigRequest):
-    await update_ai_config(request.engine, request.provider, request.fallback_enabled, request.system_prompt)
+async def set_config_endpoint(request: ConfigRequest, email: str = Depends(get_current_user)):
+    await require_permission("settings", email)
+    await update_ai_config(request.engine, request.provider, request.fallback_enabled, request.system_prompt, telegram_mention_only=request.telegram_mention_only)
     ai_engine.preferred_provider = request.provider
     ai_engine.fallback_enabled = request.fallback_enabled
     if request.system_prompt: ai_engine.system_prompt = request.system_prompt
