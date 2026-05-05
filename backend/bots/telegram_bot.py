@@ -82,9 +82,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Telegram limit is 4096 chars.
     if len(response) > 4096:
         for i in range(0, len(response), 4000):
-            await update.message.reply_text(response[i:i + 4000])
+            await update.message.reply_text(response[i:i + 4000], parse_mode="Markdown")
     else:
-        await update.message.reply_text(response)
+        await update.message.reply_text(response, parse_mode="Markdown")
 
     # Save to DB with identity
     await save_chat_history("telegram", chat_id_str, user_message, response, username=username, avatar_url=avatar_url)
