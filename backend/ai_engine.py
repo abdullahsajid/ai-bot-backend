@@ -25,6 +25,44 @@ class AIEngine:
         self.fallback_enabled = False
         self.system_prompt = "You are Pulse AI, a professional and high-performance AI assistant."
 
+    async def should_intervene(self, user_message):
+        """Quickly decide if the AI should respond to a message in a group chat."""
+        # Clean message for check
+        msg = (user_message or "").strip()
+        if not msg: return False
+
+        prompt = f"""
+        You are Pulse AI, a smart assistant for Lumo Wallet. 
+        You are monitoring a group chat. 
+        Decide if you should respond to the following message.
+        Respond 'YES' if the message is a question or request related to:
+        - Lumo Wallet, crypto, fees, transactions, or technical support.
+        - Questions directed at an assistant or asking for help.
+        Respond 'NO' if it's general social chatter, greetings, or unrelated to your services.
+        
+        Message: "{msg}"
+        
+        Decision (YES/NO):"""
+        
+        try:
+            # Use OpenAI for intent detection since Gemini is not configured
+            response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini", # Using mini for faster/cheaper intent checks
+                messages=[
+                    {"role": "system", "content": "Respond only 'YES' or 'NO'."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=5,
+                temperature=0
+            )
+            decision = response.choices[0].message.content.strip().upper()
+            return "YES" in decision
+        except Exception as e:
+            print(f"Intention Check Failed: {e}")
+            # Fallback to keyword-based detection if AI fails
+            keywords = ["lumo", "wallet", "swap", "fee", "transfer", "help", "support", "how to", "pulse"]
+            return any(kw in msg.lower() for kw in keywords)
+
     async def generate_response(self, platform, user_id, user_message, context=None, faqs=None, knowledge=None, thread_id=None):
         # 1. Build Enriched System Prompt (RAG - Retrieval Augmented Generation)
         enriched_prompt = self.system_prompt

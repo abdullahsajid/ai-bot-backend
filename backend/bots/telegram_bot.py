@@ -26,18 +26,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Ignored message from unauthorized group: {chat_id_str}")
             return
 
-    # 0. Check for Mention Only mode in groups
-    from ..database import get_ai_config
-    config = await get_ai_config()
-    mention_only = config.get("telegram_mention_only", False)
+    # 0. Check for Trigger Type
+    is_group = update.effective_chat.type in ['group', 'supergroup']
+    bot_user = await context.bot.get_me()
+    is_mentioned = f"@{bot_user.username}" in (user_message or "")
+    is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == bot_user.id
     
-    if update.effective_chat.type in ['group', 'supergroup'] and mention_only:
-        bot_user = await context.bot.get_me()
-        is_mentioned = f"@{bot_user.username}" in (user_message or "")
-        is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == bot_user.id
+    # Base decision: Private chats, mentions, and replies ALWAYS trigger a response
+    should_respond = not is_group or is_mentioned or is_reply_to_bot
+
+    # If in a group and NOT mentioned, check if we should "Smart Intervene"
+    if is_group and not should_respond:
+        from ..database import get_ai_config
+        config = await get_ai_config()
+        # If "Mention Only" is ON, we strictly ignore non-mentions
+        mention_only = config.get("telegram_mention_only", False)
         
-        if not is_mentioned and not is_reply_to_bot:
-            return # Ignore message if not mentioned and not a reply to bot
+        if not mention_only:
+            # Check if the AI thinks it should jump in naturally
+            should_respond = await ai_engine.should_intervene(user_message)
+        
+    if not should_respond:
+        return # Ignore message if not triggered and not relevant
 
     # Capture user identity
     # Capture user identity (Format: Name (@username) or Name (ID))

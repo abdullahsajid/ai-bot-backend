@@ -67,8 +67,15 @@ class MyDiscordBot(commands.Bot):
         
         # Clean the message (remove the mention tag)
         user_message = message.content
-        if self.user in message.mentions:
+        is_directly_mentioned = self.user in message.mentions
+        if is_directly_mentioned:
             user_message = user_message.replace(f'<@!{self.user.id}>', '').replace(f'<@{self.user.id}>', '').strip()
+
+        # 4. Smart Intervention — if not directly mentioned, check if message is relevant
+        if not is_directly_mentioned and message.guild:
+            should_respond = await ai_engine.should_intervene(user_message)
+            if not should_respond:
+                return  # Ignore irrelevant messages in channels
 
         # Capture user identity
         username = message.author.display_name or message.author.name

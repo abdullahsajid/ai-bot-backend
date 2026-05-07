@@ -144,6 +144,18 @@ class AppChatRequest(BaseModel):
     user_id: str
     message: str
 
+class MobileChatRequest(BaseModel):
+    user_id: str
+    message: str
+    screen_context: Optional[str] = "main_wallet"
+
+class TransactionAnalysisRequest(BaseModel):
+    user_id: str
+    amount: float
+    currency: str
+    fee: float
+    destination: str
+
 class ManualResponseRequest(BaseModel):
     platform: str
     user_id: str
@@ -821,6 +833,77 @@ async def get_notifications_endpoint():
 async def clear_notifications_endpoint():
     await clear_notifications()
     return {"status": "success"}
+
+# --- Mobile App API (Lumo Wallet Integration) ---
+
+async def verify_mobile_secret(x_app_secret: str = Header(None)):
+    """Verifies that the request is coming from the authorized Lumo Mobile App."""
+    expected_secret = os.getenv("APP_SECRET", "LumoMobileApp_Secret_2026")
+    if x_app_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Security Breach: Invalid Mobile App Secret.")
+    return True
+
+@app.post("/mobile/chat")
+async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mobile_secret)):
+    """Secure endpoint for the Flutter Lumo Wallet assistant."""
+    history_context = await get_user_context("mobile", request.user_id)
+    faqs = await get_faqs()
+    knowledge = await get_all_knowledge()
+    
+    # Custom mobile system prompt injection based on screen
+    mobile_prompt = f"You are Pulse AI inside Lumo Wallet. Current User Screen: {request.screen_context}. Help the user manage their assets securely."
+    
+    response = await ai_engine.generate_response(
+        "mobile", request.user_id, request.message, 
+        context=history_context, faqs=faqs, knowledge=knowledge
+    )
+    
+    await save_chat_history("mobile", request.user_id, request.message, response)
+    return {"response": response}
+
+@app.post("/mobile/analyze-transaction")
+async def analyze_transaction_endpoint(request: TransactionAnalysisRequest, _ = Depends(verify_mobile_secret)):
+    """Analyzes a transaction before the user confirms it in the mobile app."""
+    prompt = f"""
+    Analyze this crypto transaction for safety and efficiency:
+    - Amount: {request.amount} {request.currency}
+    - Fee: {request.fee} {request.currency}
+    - Destination: {request.destination}
+    
+    Provide a short, 1-sentence advice for the mobile user. 
+    Warn them if the fee is too high (more than 10% of amount) or if it looks like a risky transfer.
+    """
+    
+    advice = await ai_engine.generate_response("mobile", request.user_id, prompt)
+    return {"advice": advice}
+
+class OnboardingRequest(BaseModel):
+    user_id: str
+    step: str  # e.g., 'wallet_creation', 'recovery_phrase', 'first_transaction'
+    question: Optional[str] = None
+
+@app.post("/mobile/onboarding")
+async def onboarding_endpoint(request: OnboardingRequest, _ = Depends(verify_mobile_secret)):
+    """
+    Guides new Lumo Wallet users through key onboarding steps.
+    The Flutter app passes the current step and the AI provides contextual help.
+    """
+    step_context = {
+        "wallet_creation": "The user is creating their Lumo Wallet for the first time. Guide them step-by-step, reassure them about security, and explain what they are setting up.",
+        "recovery_phrase": "The user is viewing their 12/24 word recovery phrase. Emphasize its critical importance. Tell them to write it down offline, never share it, and that losing it means losing access to their funds forever.",
+        "first_transaction": "The user is about to make their first transaction. Explain gas fees, how to double-check the destination address, and that blockchain transactions are irreversible.",
+    }
+
+    context_instruction = step_context.get(
+        request.step,
+        "You are Pulse AI onboarding assistant inside Lumo Wallet. Help the user get started."
+    )
+
+    user_q = request.question or f"Can you guide me through the '{request.step}' step?"
+    full_prompt = f"{context_instruction}\n\nUser Question: {user_q}"
+
+    response = await ai_engine.generate_response("mobile", request.user_id, full_prompt)
+    return {"step": request.step, "guidance": response}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
