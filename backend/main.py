@@ -576,8 +576,10 @@ async def get_conversations(email: str = Depends(get_current_user)):
 @app.get("/messages/{platform}/{user_id}", dependencies=[Depends(get_current_user)])
 async def get_messages(platform: str, user_id: str, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    messages = await db["chat_history"].find({"platform": platform, "user_id": user_id}).to_list(length=100)
+    # Get the NEWEST 100 messages first
+    messages = await db["chat_history"].find({"platform": platform, "user_id": user_id}).sort("timestamp", -1).to_list(length=100)
     for m in messages: m["id"] = str(m.pop("_id"))
+    # Reverse them for correct UI display (Oldest to Newest)
     return messages[::-1]
 
 @app.post("/takeover/{user_id}", dependencies=[Depends(get_current_user)])

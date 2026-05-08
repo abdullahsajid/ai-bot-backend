@@ -72,12 +72,20 @@ async def get_active_conversations(limit=20):
     pipeline = [
         {"$sort": {"timestamp": -1}},
         {"$group": {
-            "_id": "$user_id",
+            "_id": {"user_id": "$user_id", "platform": "$platform"},
             "last_message": {"$first": "$message"},
             "timestamp": {"$first": "$timestamp"},
-            "platform": {"$first": "$platform"},
             "username": {"$first": "$username"},
             "avatar_url": {"$first": "$avatar_url"}
+        }},
+        {"$project": {
+            "_id": "$_id.user_id",
+            "user_id": "$_id.user_id",
+            "platform": "$_id.platform",
+            "last_message": 1,
+            "timestamp": 1,
+            "username": 1,
+            "avatar_url": 1
         }},
         {"$sort": {"timestamp": -1}},
         {"$limit": limit}
