@@ -734,19 +734,41 @@ async def set_int(request: IntegrationRequest):
 async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), ProfileName: str = Form(default="WhatsApp User")):
     user_id = From.replace("whatsapp:", "")
     platform = "whatsapp"
-    if await get_human_takeover_status(user_id):
-        await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=ProfileName)
-        await manager.broadcast({"type": "new_message", "platform": platform, "user_id": user_id, "message": Body, "response": "[HUMAN_TAKOVER_ACTIVE]"})
-        return {"status": "human"}
+    
+    # 1. Always Notify Dashboard & Save History (Safety first)
+    is_human = await get_human_takeover_status(user_id)
+    
     # Check if AI is active
     from .database import is_platform_active
-    if not await is_platform_active(platform):
-        return {"status": "disabled"}
+    ai_active = await is_platform_active(platform)
+    
+    if is_human or not ai_active:
+        # If human mode is on OR AI is disabled, we still want to see the message in Live Chat
+        status_note = "[HUMAN_TAKOVER_ACTIVE]" if is_human else "[AI_DISABLED]"
+        await save_chat_history(platform, user_id, Body, status_note, username=ProfileName)
+        await manager.broadcast({
+            "type": "new_message", 
+            "platform": platform, 
+            "user_id": user_id, 
+            "message": Body, 
+            "response": status_note,
+            "username": ProfileName
+        })
+        return {"status": "manual_or_disabled"}
         
+    # 2. AI Processing (If active and not human mode)
     response = await ai_engine.generate_response(platform, user_id, Body, await get_user_context(platform, user_id), faqs=await get_faqs(), knowledge=await get_all_knowledge())
     whatsapp_bot.send_message(user_id, response)
+    
     await save_chat_history(platform, user_id, Body, response, username=ProfileName)
-    await manager.broadcast({"type": "new_message", "platform": platform, "user_id": user_id, "message": Body, "response": response})
+    await manager.broadcast({
+        "type": "new_message", 
+        "platform": platform, 
+        "user_id": user_id, 
+        "message": Body, 
+        "response": response,
+        "username": ProfileName
+    })
     return {"status": "success"}
 
 @app.post("/send-manual", dependencies=[Depends(get_current_user)])

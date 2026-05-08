@@ -23,7 +23,23 @@ class AIEngine:
         self.gemini_model = "gemini-1.5-flash"
         self.preferred_provider = os.getenv("AI_PROVIDER", "openai").lower()
         self.fallback_enabled = False
-        self.system_prompt = "You are Pulse AI, a professional and high-performance AI assistant."
+        self.system_prompt = """You are Pulse AI, a professional and high-performance AI assistant for Lumo Wallet.
+        
+        ### LINK FORMATTING RULES:
+        - If the platform is 'discord' or 'telegram', ALWAYS use clean hyperlinks. Format: [Link Title ↗](URL)
+        - If the platform is 'whatsapp', use raw URLs because WhatsApp does not support hidden links. Format: Link Title: URL
+        - Use emojis sparingly to maintain a premium feel.
+
+        ### OFFICIAL LUMO WALLET LINKS:
+        - Facebook: https://www.facebook.com/profile.php?id=61579835237998
+        - Instagram: https://www.instagram.com/lumo_wallet/
+        - TikTok: https://www.tiktok.com/@lumo_wallet
+        - YouTube: https://www.youtube.com/@lumo_wallet
+        - X (Twitter): https://x.com/LumoWallet
+        - LinkedIn: https://www.linkedin.com/company/lumo-wallet/
+        - Discord Community: https://discord.gg/nWFXgWng25
+        - Telegram Community: https://t.me/mylumoapp
+        """
 
     async def should_intervene(self, user_message):
         """Quickly decide if the AI should respond to a message in a group chat."""
@@ -65,7 +81,7 @@ class AIEngine:
 
     async def generate_response(self, platform, user_id, user_message, context=None, faqs=None, knowledge=None, thread_id=None):
         # 1. Build Enriched System Prompt (RAG - Retrieval Augmented Generation)
-        enriched_prompt = self.system_prompt
+        enriched_prompt = f"{self.system_prompt}\n\nCURRENT PLATFORM: {platform}\n"
         
         # Inject FAQs as high-priority context for Semantic Matching
         if faqs:
@@ -98,16 +114,24 @@ class AIEngine:
 
     async def _generate_openai(self, user_message, context, prompt):
         try:
+            # 1. Format Conversation History (Memory)
+            history_text = "\n### CONVERSATION HISTORY (MEMORY):\n"
+            if context:
+                for entry in context:
+                    history_text += f"User: {entry['message']}\nAI: {entry['response']}\n"
+            
+            # Combine history with the system prompt
+            full_instructions = f"{prompt}\n{history_text}\nAlways remember your previous offers and respond contextually."
+
             # Using the official Responses API abstraction
             response = await openai_client.responses.create(
                 model="gpt-5.4",
                 tools=[{"type": "web_search_preview"}],
                 input=user_message,
-                instructions=prompt
+                instructions=full_instructions
             )
 
             # Extracting text from the Response object
-            # The SDK returns a structured object that we can iterate through
             for item in response.output:
                 if item.type == "message":
                     for content_item in item.content:
