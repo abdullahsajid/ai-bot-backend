@@ -112,7 +112,7 @@ class MyDiscordBot(commands.Bot):
                 response = await ai_engine.generate_response("discord", composite_id, user_message, context, faqs=faqs, knowledge=knowledge)
         except Exception as e:
             print(f"Chat Error: {e}")
-            response = "⚠️ I encountered an error while processing your request."
+            response = f"❌ DEBUG ERROR: {str(e)}"
             
         # Discord limit is 2000 chars. Let's chunk the message.
         if len(response) > 2000:
