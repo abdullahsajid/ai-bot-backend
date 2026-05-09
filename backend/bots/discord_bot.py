@@ -108,8 +108,7 @@ class MyDiscordBot(commands.Bot):
 
         # 3. Generate response
         try:
-            async with message.channel.typing():
-                response = await ai_engine.generate_response("discord", composite_id, user_message, context, faqs=faqs, knowledge=knowledge)
+            response = await ai_engine.generate_response("discord", composite_id, user_message, context, faqs=faqs, knowledge=knowledge)
         except Exception as e:
             print(f"Chat Error: {e}")
             response = f"❌ DEBUG ERROR: {str(e)}"
