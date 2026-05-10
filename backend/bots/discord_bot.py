@@ -62,7 +62,8 @@ class MyDiscordBot(commands.Bot):
 
         # Handle direct AI interaction
         user_id = str(message.author.id)
-        channel_id_str = str(message.channel.id)
+        is_dm = message.guild is None
+        channel_id_str = str(message.channel.id) if not is_dm else "DM"
         composite_id = f"{user_id}:{channel_id_str}"
         
         # Clean the message (remove the mention tag)
@@ -72,10 +73,33 @@ class MyDiscordBot(commands.Bot):
             user_message = user_message.replace(f'<@!{self.user.id}>', '').replace(f'<@{self.user.id}>', '').strip()
 
         # 4. Smart Intervention — if not directly mentioned, check if message is relevant
-        if not is_directly_mentioned and message.guild:
-            should_respond = await ai_engine.should_intervene(user_message)
-            if not should_respond:
-                return  # Ignore irrelevant messages in channels
+        # In DMs, we ALWAYS respond. In Groups, we check for Mentions or Relevance.
+        should_respond = is_dm or is_directly_mentioned
+        
+        if not should_respond and message.guild:
+            # Check for Continuity (Did the bot just speak in this channel?)
+            is_continuity = False
+            from ..database import get_user_context
+            from datetime import datetime, timedelta
+            import pytz
+            
+            last_chats = await get_user_context("discord", composite_id, limit=1)
+            if last_chats:
+                last_chat = last_chats[0]
+                if last_chat.get('response') and "[AI_DISABLED_OR_HUMAN_ACTIVE]" not in last_chat['response']:
+                    last_ts = last_chat.get('timestamp')
+                    if last_ts:
+                        now = datetime.now(pytz.UTC)
+                        if (now - last_ts.replace(tzinfo=pytz.UTC)) < timedelta(minutes=10):
+                            is_continuity = True
+            
+            if is_continuity:
+                should_respond = True
+            else:
+                should_respond = await ai_engine.should_intervene(user_message)
+
+        if not should_respond:
+            return  # Ignore message if not meant for us
 
         # Capture user identity
         username = message.author.display_name or message.author.name

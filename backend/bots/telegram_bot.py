@@ -32,10 +32,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_mentioned = f"@{bot_user.username}" in (user_message or "")
     is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == bot_user.id
     
-    # Base decision: Private chats, mentions, and replies ALWAYS trigger a response
-    should_respond = not is_group or is_mentioned or is_reply_to_bot
+    # 0.5 Contextual Continuity (Did the bot just speak?)
+    is_continuity = False
+    if is_group:
+        from ..database import get_user_context
+        from datetime import datetime, timedelta
+        import pytz
+        
+        last_chats = await get_user_context("telegram", chat_id_str, limit=1)
+        if last_chats:
+            last_chat = last_chats[0]
+            # If the last thing in the DB was an AI response
+            if last_chat.get('response') and "[AI_DISABLED_OR_HUMAN_ACTIVE]" not in last_chat['response']:
+                last_ts = last_chat.get('timestamp')
+                if last_ts:
+                    # If it happened in the last 10 minutes, keep the conversation going
+                    now = datetime.now(pytz.UTC)
+                    if (now - last_ts.replace(tzinfo=pytz.UTC)) < timedelta(minutes=10):
+                        is_continuity = True
 
-    # If in a group and NOT mentioned, check if we should "Smart Intervene"
+    # Base decision: Private chats, mentions, replies, and continuity ALWAYS trigger a response
+    should_respond = not is_group or is_mentioned or is_reply_to_bot or is_continuity
+
+    # If in a group and NOT triggered, check if we should "Smart Intervene"
     if is_group and not should_respond:
         from ..database import get_ai_config
         config = await get_ai_config()
