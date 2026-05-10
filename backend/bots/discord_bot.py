@@ -62,7 +62,6 @@ class MyDiscordBot(commands.Bot):
             print(f"🔍 [DISCORD] Checking continuity/intent for: {user_id}")
             # Check for Continuity
             is_continuity = False
-            from ..database import get_user_context
             
             try:
                 last_chats = await get_user_context("discord", composite_id, limit=1)

@@ -42,7 +42,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_continuity = False
     if is_group:
         print(f"🔍 [TELEGRAM] Checking continuity for: {chat_id_str}")
-        from ..database import get_user_context
         
         try:
             last_chats = await get_user_context("telegram", chat_id_str, limit=1)
