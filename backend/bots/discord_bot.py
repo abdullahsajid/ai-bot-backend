@@ -25,13 +25,8 @@ class MyDiscordBot(commands.Bot):
         if message.author.bot:
             return
 
-        # 1.5 Check Allowed Servers lock
-        # allowed_servers = os.getenv("ALLOWED_DISCORD_SERVERS")
-        # if allowed_servers and message.guild is not None:
-        #     allowed_list = [s.strip() for s in allowed_servers.split(',')]
-        #     if str(message.guild.id) not in allowed_list:
-        #         print(f"Ignored message from unauthorized server: {message.guild.id}")
-        #         return
+        channel_name = message.channel.name.lower() if message.guild else "DM"
+        print(f"📩 [DISCORD] Message received in {channel_name} from {message.author}: {message.content[:50]}...")
 
         # 2. Ignore log and ticket channels/categories
         log_keywords = [
@@ -40,103 +35,96 @@ class MyDiscordBot(commands.Bot):
             "staff-announcements", "ticket"
         ]
         
-        channel_name = message.channel.name.lower()
-        category_name = message.channel.category.name.lower() if message.channel.category else ""
+        if message.guild:
+            category_name = message.channel.category.name.lower() if message.channel.category else ""
+            if any(key in channel_name for key in log_keywords) or any(key in category_name for key in log_keywords):
+                print(f"⏩ [DISCORD] Ignoring system/log channel: {channel_name}")
+                return
+
+        # 3. Check for mentions/replies
+        is_dm = message.guild is None
+        is_directly_mentioned = self.user in message.mentions
         
-        if any(key in channel_name for key in log_keywords) or any(key in category_name for key in log_keywords):
-            return
-
-        # 3. Ignore if a human is replying to or tagging another human
-        # (This stops the bot from interrupting admin-to-user conversations)
-        
-        # Check if natively replying to someone else
-        if message.reference and getattr(message.reference, "resolved", None):
-            if message.reference.resolved.author.id != self.user.id:
-                return # They are replying to someone else
-                
-        # Check if manually tagging someone else (but not the bot)
-        if len(message.mentions) > 0 and self.user not in message.mentions:
-            return
-
-        if message.content.startswith("!"):
-            await self.process_commands(message)
-            return
-
         # Handle direct AI interaction
         user_id = str(message.author.id)
-        is_dm = message.guild is None
         channel_id_str = str(message.channel.id) if not is_dm else "DM"
         composite_id = f"{user_id}:{channel_id_str}"
         
-        # Clean the message (remove the mention tag)
+        # Clean the message
         user_message = message.content
-        is_directly_mentioned = self.user in message.mentions
         if is_directly_mentioned:
             user_message = user_message.replace(f'<@!{self.user.id}>', '').replace(f'<@{self.user.id}>', '').strip()
 
-        # 4. Smart Intervention — if not directly mentioned, check if message is relevant
-        # In DMs, we ALWAYS respond. In Groups, we check for Mentions or Relevance.
+        # 4. Smart Intervention / Continuity
         should_respond = is_dm or is_directly_mentioned
         
         if not should_respond and message.guild:
-            # Check for Continuity (Did the bot just speak in this channel?)
+            print(f"🔍 [DISCORD] Checking continuity/intent for: {user_id}")
+            # Check for Continuity
             is_continuity = False
             from ..database import get_user_context
             
-            last_chats = await get_user_context("discord", composite_id, limit=1)
-            if last_chats:
-                last_chat = last_chats[0]
-                if last_chat.get('response') and "[AI_DISABLED_OR_HUMAN_ACTIVE]" not in last_chat['response']:
-                    last_ts = last_chat.get('timestamp')
-                    if last_ts:
-                        now = datetime.now(pytz.UTC)
-                        if (now - last_ts.replace(tzinfo=pytz.UTC)) < timedelta(minutes=10):
-                            is_continuity = True
+            try:
+                last_chats = await get_user_context("discord", composite_id, limit=1)
+                if last_chats:
+                    last_chat = last_chats[0]
+                    if last_chat.get('response') and "[AI_DISABLED_OR_HUMAN_ACTIVE]" not in last_chat['response']:
+                        last_ts = last_chat.get('timestamp')
+                        if last_ts:
+                            now = datetime.now(pytz.UTC)
+                            if (now - last_ts.replace(tzinfo=pytz.UTC)) < timedelta(minutes=10):
+                                is_continuity = True
+                                print("✅ [DISCORD] Continuity detected (10m window)")
+            except Exception as e:
+                print(f"⚠️ [DISCORD] History check error: {e}")
             
             if is_continuity:
                 should_respond = True
             else:
                 should_respond = await ai_engine.should_intervene(user_message)
+                print(f"🤖 [DISCORD] AI Intervention Decision: {should_respond}")
 
         if not should_respond:
-            return  # Ignore message if not meant for us
+            return
 
-        # Capture user identity
-        username = message.author.display_name or message.author.name
-        avatar_url = str(message.author.display_avatar.url) if message.author.display_avatar else None
-
-        # Notify Dashboard
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post("http://localhost:8000/internal/notify", json={
-                    "platform": "discord",
-                    "user_id": composite_id,
-                    "message": user_message
-                })
-        except Exception:
-            pass
-
-        # 1. Check for human takeover or global AI switch
+        # 5. Check Active Status
         from ..database import is_platform_active
         is_active = await is_platform_active("discord")
         is_human = await get_human_takeover_status(composite_id)
         
         if not is_active or is_human:
-            await save_chat_history("discord", composite_id, user_message, "[AI_DISABLED_OR_HUMAN_ACTIVE]", username=username, avatar_url=avatar_url)
+            print(f"🚫 [DISCORD] AI Disabled or Human Takeover for {user_id}")
+            await save_chat_history("discord", composite_id, user_message, "[AI_DISABLED_OR_HUMAN_ACTIVE]", username=message.author.name)
             return
 
-        # 2. Get context from DB
-        context = await get_user_context("discord", composite_id)
-        faqs = await get_faqs()
-        knowledge = await get_all_knowledge()
-
-        # 3. Generate response
+        # 6. Generate response
+        print(f"🧠 [DISCORD] Generating AI response for {user_id}...")
         try:
+            context = await get_user_context("discord", composite_id)
+            faqs = await get_faqs()
+            knowledge = await get_all_knowledge()
+            
             response = await ai_engine.generate_response("discord", composite_id, user_message, context, faqs=faqs, knowledge=knowledge)
+            print(f"✅ [DISCORD] AI response generated ({len(response)} chars)")
         except Exception as e:
-            print(f"Chat Error: {e}")
-            response = "⚠️ I encountered an error while processing your request."
-            # response = f"❌ DEBUG ERROR: {str(e)}"
+            print(f"❌ [DISCORD] CRITICAL ERROR: {e}")
+            response = f"❌ DEBUG ERROR: {str(e)}"
+            
+        # 7. Send and Save
+        try:
+            if len(response) > 2000:
+                for i in range(0, len(response), 1900):
+                    chunk = response[i:i + 1900]
+                    await message.reply(chunk) if i == 0 else await message.channel.send(chunk)
+            else:
+                await message.reply(response)
+            
+            username = message.author.display_name or message.author.name
+            avatar_url = str(message.author.display_avatar.url) if message.author.display_avatar else None
+            await save_chat_history("discord", composite_id, user_message, response, username=username, avatar_url=avatar_url)
+            print(f"💾 [DISCORD] Interaction saved to DB")
+        except Exception as e:
+            print(f"❌ [DISCORD] Failed to send/save: {e}")
             
         # Discord limit is 2000 chars. Let's chunk the message.
         if len(response) > 2000:
