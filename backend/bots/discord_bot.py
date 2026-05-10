@@ -125,17 +125,6 @@ class MyDiscordBot(commands.Bot):
         except Exception as e:
             print(f"❌ [DISCORD] Failed to send/save: {e}")
             
-        # Discord limit is 2000 chars. Let's chunk the message.
-        if len(response) > 2000:
-            for i in range(0, len(response), 1900):
-                chunk = response[i:i + 1900]
-                await message.reply(chunk) if i == 0 else await message.channel.send(chunk)
-        else:
-            await message.reply(response)
-
-        # Save to DB with identity
-        await save_chat_history("discord", composite_id, user_message, response, username=username, avatar_url=avatar_url)
-
 def run_discord():
     token = os.getenv("DISCORD_TOKEN")
     if not token:
