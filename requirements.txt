@@ -16,3 +16,4 @@ passlib[bcrypt]
 bcrypt==4.0.1
 httpx
 beautifulsoup4
+pytz

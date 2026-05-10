@@ -3,6 +3,8 @@ import discord
 from discord.ext import commands
 import httpx
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
+import pytz
 from ..ai_engine import ai_engine
 from ..database import save_chat_history, get_user_context, get_human_takeover_status, get_faqs, get_all_knowledge, get_user_thread, save_user_thread
 
@@ -80,8 +82,6 @@ class MyDiscordBot(commands.Bot):
             # Check for Continuity (Did the bot just speak in this channel?)
             is_continuity = False
             from ..database import get_user_context
-            from datetime import datetime, timedelta
-            import pytz
             
             last_chats = await get_user_context("discord", composite_id, limit=1)
             if last_chats:

@@ -3,6 +3,8 @@ import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
+import pytz
 from ..ai_engine import ai_engine
 from ..database import save_chat_history, get_user_context, get_human_takeover_status, get_faqs, get_all_knowledge
 
@@ -36,8 +38,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_continuity = False
     if is_group:
         from ..database import get_user_context
-        from datetime import datetime, timedelta
-        import pytz
         
         last_chats = await get_user_context("telegram", chat_id_str, limit=1)
         if last_chats:
