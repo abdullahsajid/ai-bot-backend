@@ -37,6 +37,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_user = await context.bot.get_me()
     is_mentioned = f"@{bot_user.username}" in (user_message or "")
     is_reply_to_bot = update.message.reply_to_message and update.message.reply_to_message.from_user.id == bot_user.id
+    is_reply_to_other = update.message.reply_to_message and update.message.reply_to_message.from_user.id != bot_user.id
+
+    # If replying to another user in group and not explicitly mentioned, ignore it
+    if is_group and is_reply_to_other and not is_mentioned:
+        print(f"⏩ [TELEGRAM] Ignoring reply to another user in group chat")
+        return
     
     # 0.5 Contextual Continuity (Did the bot just speak?)
     is_continuity = False
