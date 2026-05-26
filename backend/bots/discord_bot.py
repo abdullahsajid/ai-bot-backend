@@ -44,7 +44,17 @@ class MyDiscordBot(commands.Bot):
         # 3. Check for mentions/replies
         is_dm = message.guild is None
         is_directly_mentioned = self.user in message.mentions
-        
+
+        # If this is a reply to another human (not the bot), ignore it unless directly mentioned
+        if message.guild and message.reference and not is_directly_mentioned:
+            try:
+                ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                if ref_msg and ref_msg.author.id != self.user.id and not ref_msg.author.bot:
+                    print(f"⏩ [DISCORD] Ignoring reply to another human in #{message.channel.name}")
+                    return
+            except Exception:
+                pass
+
         # Handle direct AI interaction
         user_id = str(message.author.id)
         channel_id_str = str(message.channel.id) if not is_dm else "DM"
@@ -80,8 +90,8 @@ class MyDiscordBot(commands.Bot):
             if is_continuity:
                 should_respond = True
             else:
-                should_respond = await ai_engine.should_intervene(user_message)
-                print(f"🤖 [DISCORD] AI Intervention Decision: {should_respond}")
+                # No smart intervention; only mention or DM triggers a response
+                should_respond = False
 
         if not should_respond:
             return
