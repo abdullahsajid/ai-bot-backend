@@ -66,22 +66,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"⚠️ [TELEGRAM] Context check error: {e}")
 
-    # Base decision: Private chats, mentions, replies, and continuity ALWAYS trigger a response
-    should_respond = not is_group or is_mentioned or is_reply_to_bot or is_continuity
+    # Base decision: Private chats, mentions, and replies ALWAYS trigger a response
+    should_respond = not is_group or is_mentioned or is_reply_to_bot
 
     # Check dashboard "Mention Only" toggle
-    if is_group and not should_respond:
+    if is_group:
         from ..database import get_ai_config
         config = await get_ai_config()
         mention_only = config.get("telegram_mention_only", False)
         
         if mention_only:
-            # Toggle is ON → only mentions trigger a response
-            should_respond = False
+            # Toggle ON → only DM, mention, or reply-to-bot (no continuity)
+            should_respond = not is_group or is_mentioned or is_reply_to_bot
         else:
-            # Toggle is OFF → use smart intervention for relevant questions
-            should_respond = await ai_engine.should_intervene(user_message)
-            print(f"🤖 [TELEGRAM] AI Intervention Decision: {should_respond}")
+            # Toggle OFF → DM, mention, reply-to-bot, AND continuity (but NO auto-intervention)
+            should_respond = not is_group or is_mentioned or is_reply_to_bot or is_continuity
 
     if not should_respond:
         return
