@@ -828,6 +828,17 @@ async def send_manual(request: ManualResponseRequest):
                 if res.status_code != 200:
                     raise HTTPException(status_code=res.status_code, detail=f"Discord API Error: {res.text}")
 
+        elif request.platform == 'app':
+            # For mobile app users, deliver via WebSocket broadcast
+            # The mobile app must listen to the WebSocket and render this as a staff message
+            await manager.broadcast({
+                "type": "staff_reply",
+                "platform": "app",
+                "user_id": request.user_id,
+                "message": request.message,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
         # 2. Save to History
         await save_chat_history(request.platform, request.user_id, f"[ADMIN]: {request.message}", "N/A")
 
