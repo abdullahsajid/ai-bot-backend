@@ -1,14 +1,94 @@
 import os
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import httpx
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import pytz
 from ..ai_engine import ai_engine
-from ..database import save_chat_history, get_user_context, get_human_takeover_status, get_faqs, get_all_knowledge, get_user_thread, save_user_thread
+from ..database import save_chat_history, get_user_context, get_human_takeover_status, get_faqs, get_all_knowledge, get_user_thread, save_user_thread, db
 
 load_dotenv()
+
+async def check_and_send_discord_announcement(bot):
+    # Check last alert timestamp in database
+    settings = db["system_settings"]
+    doc = await settings.find_one({"key": "last_security_announcement_discord"})
+    now = datetime.utcnow()
+    
+    if doc:
+        last_sent = doc.get("timestamp")
+        # Check if 4 hours have passed (14400 seconds)
+        if last_sent and (now - last_sent).total_seconds() < 14400:
+            return
+            
+    # Fetch configured channels from env
+    channels_str = os.getenv("DISCORD_SECURITY_CHANNELS")
+    channel_ids = []
+    if channels_str:
+        channel_ids = [int(c.strip()) for c in channels_str.split(",") if c.strip().isdigit()]
+        
+    security_text = (
+        "⚠️ Security Reminder from PulseAI\n\n"
+        "Lumo Wallet will never ask you for:\n\n"
+        "• Private Keys\n"
+        "• Recovery Phrases\n"
+        "• Deposits\n"
+        "• Wallet Transfers\n"
+        "• Bank Transfers\n\n"
+        "If anyone contacts you claiming to represent Lumo Wallet and asks for any of the above, it is a scam.\n\n"
+        "Stay safe. Stay in control.\n\n"
+        "💜 One Wallet. Endless Possibilities.\n\n"
+        "#LumoWallet #PulseAI #CryptoSecurity #SelfCustody #StaySafe"
+    )
+    
+    image_path = os.path.join(os.path.dirname(__file__), "assets", "security_alert.png")
+    
+    target_channels = []
+    if channel_ids:
+        for cid in channel_ids:
+            try:
+                channel = bot.get_channel(cid)
+                if not channel:
+                    channel = await bot.fetch_channel(cid)
+                if channel:
+                    target_channels.append(channel)
+                else:
+                    print(f"❌ [DISCORD] Channel {cid} not found.")
+            except Exception as e:
+                print(f"❌ [DISCORD] Failed to fetch channel {cid}: {e}")
+    else:
+        # Fallback to ALL text channels in all guilds where the bot has permission
+        for guild in bot.guilds:
+            for channel in guild.text_channels:
+                perms = channel.permissions_for(guild.me)
+                if perms.send_messages:
+                    target_channels.append(channel)
+                    
+    if not target_channels:
+        print("⚠️ [DISCORD] No target channels found to send the announcement.")
+        return
+        
+    sent_any = False
+    for channel in target_channels:
+        try:
+            if os.path.exists(image_path):
+                file = discord.File(image_path, filename="security_alert.png")
+                await channel.send(content=security_text, file=file)
+            else:
+                await channel.send(content=security_text)
+            print(f"✅ [DISCORD] Sent security announcement to channel {channel.name} ({channel.id})")
+            sent_any = True
+        except Exception as e:
+            print(f"❌ [DISCORD] Failed to send to channel {channel.id}: {e}")
+            
+    if sent_any:
+        # Update last sent timestamp
+        await settings.update_one(
+            {"key": "last_security_announcement_discord"},
+            {"$set": {"timestamp": now}},
+            upsert=True
+        )
 
 class MyDiscordBot(commands.Bot):
     def __init__(self):
@@ -16,9 +96,23 @@ class MyDiscordBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
 
+    async def setup_hook(self) -> None:
+        self.security_announcement_task.start()
+
     async def on_ready(self):
         print(f'Logged in as {self.user} (ID: {self.user.id})')
         print('------')
+
+    @tasks.loop(minutes=10)
+    async def security_announcement_task(self):
+        try:
+            await check_and_send_discord_announcement(self)
+        except Exception as e:
+            print(f"❌ [DISCORD] Error in security_announcement_task: {e}")
+
+    @security_announcement_task.before_loop
+    async def before_security_announcement_task(self):
+        await self.wait_until_ready()
 
     async def on_message(self, message):
         # 1. Ignore yourself and other bots

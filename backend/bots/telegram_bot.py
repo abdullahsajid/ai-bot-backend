@@ -1,14 +1,94 @@
 import os
 import logging
+import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import pytz
 from ..ai_engine import ai_engine
-from ..database import save_chat_history, get_user_context, get_human_takeover_status, get_faqs, get_all_knowledge
+from ..database import save_chat_history, get_user_context, get_human_takeover_status, get_faqs, get_all_knowledge, db
 
 load_dotenv()
+
+async def telegram_security_announcement_loop(bot):
+    print("🚀 [TELEGRAM] Starting security announcement background loop...")
+    # Wait a few seconds to let everything settle
+    await asyncio.sleep(5)
+    
+    settings = db["system_settings"]
+    
+    security_text = (
+        "⚠️ Security Reminder from PulseAI\n\n"
+        "Lumo Wallet will never ask you for:\n\n"
+        "• Private Keys\n"
+        "• Recovery Phrases\n"
+        "• Deposits\n"
+        "• Wallet Transfers\n"
+        "• Bank Transfers\n\n"
+        "If anyone contacts you claiming to represent Lumo Wallet and asks for any of the above, it is a scam.\n\n"
+        "Stay safe. Stay in control.\n\n"
+        "💜 One Wallet. Endless Possibilities.\n\n"
+        "#LumoWallet #PulseAI #CryptoSecurity #SelfCustody #StaySafe"
+    )
+    
+    image_path = os.path.join(os.path.dirname(__file__), "assets", "security_alert.png")
+    
+    while True:
+        try:
+            doc = await settings.find_one({"key": "last_security_announcement_telegram"})
+            now = datetime.utcnow()
+            should_send = False
+            
+            if not doc:
+                should_send = True
+            else:
+                last_sent = doc.get("timestamp")
+                if not last_sent or (now - last_sent).total_seconds() >= 14400:
+                    should_send = True
+                    
+            if should_send:
+                # Fetch target groups from env
+                groups_str = os.getenv("TELEGRAM_SECURITY_GROUPS")
+                if not groups_str:
+                    # Fallback to ALLOWED_TELEGRAM_GROUPS
+                    groups_str = os.getenv("ALLOWED_TELEGRAM_GROUPS")
+                    
+                if groups_str:
+                    group_ids = [g.strip() for g in groups_str.split(",") if g.strip()]
+                    sent_any = False
+                    for gid in group_ids:
+                        try:
+                            if os.path.exists(image_path):
+                                with open(image_path, "rb") as photo_file:
+                                    await bot.send_photo(
+                                        chat_id=gid,
+                                        photo=photo_file,
+                                        caption=security_text
+                                    )
+                            else:
+                                await bot.send_message(
+                                    chat_id=gid,
+                                    text=security_text
+                                )
+                            print(f"✅ [TELEGRAM] Sent security announcement to group {gid}")
+                            sent_any = True
+                        except Exception as e:
+                            print(f"❌ [TELEGRAM] Failed to send to group {gid}: {e}")
+                            
+                    if sent_any:
+                        await settings.update_one(
+                            {"key": "last_security_announcement_telegram"},
+                            {"$set": {"timestamp": now}},
+                            upsert=True
+                        )
+                else:
+                    print("⚠️ [TELEGRAM] No TELEGRAM_SECURITY_GROUPS or ALLOWED_TELEGRAM_GROUPS configured.")
+        except Exception as e:
+            print(f"❌ [TELEGRAM] Error in security announcement loop: {e}")
+            
+        # Sleep for 10 minutes before checking again
+        await asyncio.sleep(600)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -134,13 +214,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+async def post_init(application):
+    asyncio.create_task(telegram_security_announcement_loop(application.bot))
+
 def run_telegram():
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
         print("TELEGRAM_TOKEN not found in environment variables.")
         return
     
-    application = ApplicationBuilder().token(token).build()
+    application = ApplicationBuilder().token(token).post_init(post_init).build()
     
     text_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
     application.add_handler(text_handler)
