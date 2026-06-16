@@ -663,6 +663,22 @@ async def update_convo_owner(platform: str, user_id: str, request: OwnerPatchReq
     })
     return {"status": "success"}
 
+class NamePatchRequest(BaseModel):
+    customer_name: str
+
+@app.patch("/conversations/{platform}/{user_id}/name")
+async def update_convo_customer_name(platform: str, user_id: str, request: NamePatchRequest, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    await set_customer_name(platform, user_id, request.customer_name)
+    await manager.broadcast({
+        "type": "conversation_name_update",
+        "platform": platform,
+        "user_id": user_id,
+        "customer_name": request.customer_name,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"status": "success"}
+
 @app.post("/takeover/{platform}/{user_id}")
 async def set_takeover_platform(platform: str, user_id: str, request: TakeoverRequest, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
