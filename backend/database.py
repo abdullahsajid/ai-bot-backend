@@ -67,7 +67,7 @@ async def set_human_takeover_status(user_id, status):
         upsert=True
     )
 
-async def get_active_conversations(limit=20):
+async def get_active_conversations(limit=20, skip=0):
     # Aggregate to get unique users and their last message
     pipeline = [
         {"$sort": {"timestamp": -1}},
@@ -88,10 +88,30 @@ async def get_active_conversations(limit=20):
             "avatar_url": 1
         }},
         {"$sort": {"timestamp": -1}},
+        {"$skip": skip},
         {"$limit": limit}
     ]
     cursor = history_collection.aggregate(pipeline)
-    return await cursor.to_list(length=limit)
+    convs = await cursor.to_list(length=limit)
+    for c in convs:
+        u = await users_collection.find_one({"platform": c["platform"], "user_id": str(c["user_id"])})
+        if not u:
+            # Try fallback without platform for old records
+            u = await users_collection.find_one({"user_id": str(c["user_id"])})
+        
+        if u:
+            c["status"] = u.get("status", "new")
+            c["owner_email"] = u.get("owner_email", None)
+            c["owner_name"] = u.get("owner_name", None)
+            c["wait_since"] = u.get("wait_since", None)
+            c["customer_name"] = u.get("customer_name", u.get("username", None))
+        else:
+            c["status"] = "new"
+            c["owner_email"] = None
+            c["owner_name"] = None
+            c["wait_since"] = None
+            c["customer_name"] = None
+    return convs
 
 async def get_faqs():
     cursor = faq_collection.find()
@@ -180,7 +200,8 @@ async def get_admin_profile(email: str):
         "name": admin.get("name", "Pulse Admin"),
         "email": admin.get("email", email),
         "avatar_url": admin.get("avatar_url", ""),
-        "role": admin.get("role", "SUPER ADMIN")
+        "role": admin.get("role", "SUPER ADMIN"),
+        "status": admin.get("status", "online")
     }
 
 async def update_admin_profile(current_email: str, name: str, new_email: str, avatar_url: str = None):
@@ -375,3 +396,70 @@ async def create_initial_admin():
         }
         await admins_collection.insert_one(admin_user)
         print("Initial admin created: admin@pulseai.com / admin123")
+
+async def update_conversation_status(platform, user_id, status: str):
+    await users_collection.update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"status": status}},
+        upsert=True
+    )
+
+async def update_conversation_owner(platform, user_id, owner_email: str, owner_name: str = None):
+    await users_collection.update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"owner_email": owner_email, "owner_name": owner_name}},
+        upsert=True
+    )
+
+async def set_conversation_wait(platform, user_id, wait_since):
+    await users_collection.update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"wait_since": wait_since}},
+        upsert=True
+    )
+
+async def set_customer_name(platform, user_id, customer_name: str):
+    await users_collection.update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"customer_name": customer_name, "username": customer_name}},
+        upsert=True
+    )
+
+async def update_admin_status(email: str, status: str):
+    await admins_collection.update_one(
+        {"email": email},
+        {"$set": {"status": status}}
+    )
+
+async def suggest_kb_articles(query: str, limit: int = 3):
+    if not query:
+        return []
+    cursor = knowledge_collection.find(
+        {"$or": [
+            {"filename": {"$regex": query, "$options": "i"}},
+            {"content": {"$regex": query, "$options": "i"}}
+        ]}
+    ).limit(limit)
+    articles = await cursor.to_list(length=limit)
+    for a in articles:
+        a["id"] = str(a.pop("_id"))
+    return articles
+
+async def get_all_macros():
+    cursor = db["macros"].find()
+    macros = await cursor.to_list(length=100)
+    for m in macros:
+        m["id"] = str(m.pop("_id"))
+    return macros
+
+async def add_macro(title: str, content: str):
+    res = await db["macros"].insert_one({
+        "title": title,
+        "content": content,
+        "timestamp": datetime.utcnow()
+    })
+    return str(res.inserted_id)
+
+async def delete_macro(macro_id: str):
+    await db["macros"].delete_one({"_id": ObjectId(macro_id)})
+    return True

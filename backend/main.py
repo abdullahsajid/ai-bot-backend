@@ -27,7 +27,9 @@ from .database import (
     create_initial_admin, create_admin, get_admin_preferences, 
     update_admin_preferences, save_otp, verify_otp, add_knowledge, get_all_knowledge,
     get_user_thread, save_user_thread, add_notification, get_notifications, clear_notifications,
-    is_account_locked, track_failed_login, reset_failed_login, get_all_staff, delete_admin, update_admin
+    is_account_locked, track_failed_login, reset_failed_login, get_all_staff, delete_admin, update_admin,
+    update_conversation_status, update_conversation_owner, set_conversation_wait, set_customer_name, update_admin_status,
+    suggest_kb_articles, get_all_macros, add_macro, delete_macro
 )
 from .bots.whatsapp import whatsapp_bot
 
@@ -143,6 +145,8 @@ class IntegrationRequest(BaseModel):
 class AppChatRequest(BaseModel):
     user_id: str
     message: str
+    platform: Optional[str] = "app"
+    customer_name: Optional[str] = None
 
 class MobileChatRequest(BaseModel):
     user_id: str
@@ -272,7 +276,24 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
 
     user_id = request.user_id
     user_message = request.message
-    platform = "app"
+    platform = request.platform or "app"
+
+    if request.customer_name:
+        await set_customer_name(platform, user_id, request.customer_name)
+
+    # Manage chat status and waiting timer
+    user_status = "new"
+    u = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
+    if not u:
+        u = await db["users"].find_one({"user_id": str(user_id)})
+    if u:
+        user_status = u.get("status", "new")
+    if user_status == "resolved":
+        await update_conversation_status(platform, user_id, "new")
+        user_status = "new"
+    if user_status == "new":
+        if not u or not u.get("wait_since"):
+            await set_conversation_wait(platform, user_id, datetime.utcnow())
 
     is_human = await get_human_takeover_status(user_id)
     if is_human:
@@ -570,9 +591,9 @@ async def get_stats(interval: str = "hourly", email: str = Depends(get_current_u
     }
 
 @app.get("/conversations", dependencies=[Depends(get_current_user)])
-async def get_conversations(email: str = Depends(get_current_user)):
+async def get_conversations(limit: int = 20, skip: int = 0, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    convos = await get_active_conversations()
+    convos = await get_active_conversations(limit=limit, skip=skip)
     for c in convos: c["user_id"] = c.pop("_id")
     return convos
 
@@ -593,6 +614,131 @@ async def set_takeover(user_id: str, request: TakeoverRequest):
 @app.get("/takeover/{user_id}", dependencies=[Depends(get_current_user)])
 async def get_takeover(user_id: str):
     return {"is_human": await get_human_takeover_status(user_id)}
+
+# --- Conversation Upgrades Endpoints ---
+
+class StatusPatchRequest(BaseModel):
+    status: str
+
+@app.patch("/conversations/{platform}/{user_id}/status")
+async def update_convo_status(platform: str, user_id: str, request: StatusPatchRequest, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    if request.status not in ("new", "in_progress", "resolved"):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be new, in_progress, or resolved.")
+    
+    await update_conversation_status(platform, user_id, request.status)
+    if request.status == "resolved":
+        await set_conversation_wait(platform, user_id, None)
+    elif request.status == "new":
+        await set_conversation_wait(platform, user_id, datetime.utcnow())
+        
+    await manager.broadcast({
+        "type": "conversation_status_update",
+        "platform": platform,
+        "user_id": user_id,
+        "status": request.status,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"status": "success"}
+
+class OwnerPatchRequest(BaseModel):
+    owner_email: Optional[str] = None
+
+@app.patch("/conversations/{platform}/{user_id}/owner")
+async def update_convo_owner(platform: str, user_id: str, request: OwnerPatchRequest, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    owner_name = None
+    if request.owner_email:
+        admin_profile = await get_admin_profile(request.owner_email)
+        owner_name = admin_profile.get("name", "Staff Member")
+        
+    await update_conversation_owner(platform, user_id, request.owner_email, owner_name)
+    await manager.broadcast({
+        "type": "conversation_owner_update",
+        "platform": platform,
+        "user_id": user_id,
+        "owner_email": request.owner_email,
+        "owner_name": owner_name,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"status": "success"}
+
+@app.post("/takeover/{platform}/{user_id}")
+async def set_takeover_platform(platform: str, user_id: str, request: TakeoverRequest, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    await set_human_takeover_status(user_id, request.is_human)
+    
+    admin_profile = await get_admin_profile(email)
+    admin_name = admin_profile.get("name", "Staff Member")
+    admin_avatar = admin_profile.get("avatar_url", "")
+    
+    if request.is_human:
+        sys_msg = f"{admin_name} Joined the chat"
+        await save_chat_history(platform, user_id, sys_msg, "N/A", username="System")
+        await update_conversation_status(platform, user_id, "in_progress")
+        await update_conversation_owner(platform, user_id, email, admin_name)
+        await set_conversation_wait(platform, user_id, None)
+
+        await manager.broadcast({
+            "type": "agent_joined",
+            "platform": platform,
+            "user_id": user_id,
+            "agent_name": admin_name,
+            "agent_avatar": admin_avatar,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    else:
+        sys_msg = f"{admin_name} Left the chat"
+        await save_chat_history(platform, user_id, sys_msg, "N/A", username="System")
+        await manager.broadcast({
+            "type": "agent_left",
+            "platform": platform,
+            "user_id": user_id,
+            "agent_name": admin_name,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    return {"status": "success", "is_human": request.is_human}
+
+class AgentStatusRequest(BaseModel):
+    status: str
+
+@app.post("/agent/status")
+async def change_agent_status(request: AgentStatusRequest, email: str = Depends(get_current_user)):
+    if request.status not in ("online", "offline", "after_chat_work"):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be online, offline, or after_chat_work.")
+        
+    await update_admin_status(email, request.status)
+    await manager.broadcast({
+        "type": "agent_status_update",
+        "email": email,
+        "status": request.status,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    return {"status": "success"}
+
+@app.get("/kb-suggest", dependencies=[Depends(get_current_user)])
+async def get_kb_suggestions(query: str = ""):
+    return await suggest_kb_articles(query)
+
+@app.get("/macros", dependencies=[Depends(get_current_user)])
+async def list_macros():
+    return await get_all_macros()
+
+class MacroCreateRequest(BaseModel):
+    title: str
+    content: str
+
+@app.post("/macros")
+async def create_macro(request: MacroCreateRequest, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    macro_id = await add_macro(request.title, request.content)
+    return {"status": "success", "id": macro_id}
+
+@app.delete("/macros/{macro_id}")
+async def remove_macro(macro_id: str, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    await delete_macro(macro_id)
+    return {"status": "success"}
 
 @app.get("/faq", dependencies=[Depends(get_current_user)])
 async def get_all_faqs():
@@ -776,9 +922,15 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
     })
     return {"status": "success"}
 
-@app.post("/send-manual", dependencies=[Depends(get_current_user)])
-async def send_manual(request: ManualResponseRequest):
+@app.post("/send-manual")
+async def send_manual(request: ManualResponseRequest, email: str = Depends(get_current_user)):
     await set_human_takeover_status(request.user_id, True)
+    admin_profile = await get_admin_profile(email)
+    admin_name = admin_profile.get("name", "Staff Member")
+    
+    await update_conversation_status(request.platform, request.user_id, "in_progress")
+    await update_conversation_owner(request.platform, request.user_id, email, admin_name)
+    await set_conversation_wait(request.platform, request.user_id, None)
     
     try:
         # 1. Deliver to Platform
@@ -828,12 +980,12 @@ async def send_manual(request: ManualResponseRequest):
                 if res.status_code != 200:
                     raise HTTPException(status_code=res.status_code, detail=f"Discord API Error: {res.text}")
 
-        elif request.platform == 'app':
-            # For mobile app users, deliver via WebSocket broadcast
-            # The mobile app must listen to the WebSocket and render this as a staff message
+        elif request.platform in ('app', 'website'):
+            # For mobile app / website users, deliver via WebSocket broadcast
+            # The client must listen to the WebSocket and render this as a staff message
             await manager.broadcast({
                 "type": "staff_reply",
-                "platform": "app",
+                "platform": request.platform,
                 "user_id": request.user_id,
                 "message": request.message,
                 "timestamp": datetime.utcnow().isoformat()
