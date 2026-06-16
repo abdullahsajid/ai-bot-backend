@@ -382,6 +382,14 @@ async def update_admin(email, update_data):
     return True
 
 async def create_initial_admin():
+    # Create database indexes to optimize query performance
+    try:
+        await history_collection.create_index([("timestamp", -1)])
+        await history_collection.create_index([("platform", 1), ("user_id", 1)])
+        await users_collection.create_index([("platform", 1), ("user_id", 1)])
+    except Exception as e:
+        print(f"Error creating indexes: {e}")
+
     # Only create if no admins exist
     count = await admins_collection.count_documents({})
     if count == 0:
