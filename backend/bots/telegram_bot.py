@@ -44,7 +44,7 @@ async def telegram_security_announcement_loop(bot):
                 should_send = True
             else:
                 last_sent = doc.get("timestamp")
-                if not last_sent or (now - last_sent).total_seconds() >= 14400:
+                if not last_sent or (now - last_sent).total_seconds() >= 18000:
                     should_send = True
                     
             if should_send:
