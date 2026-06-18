@@ -729,7 +729,7 @@ async def set_takeover(user_id: str, request: TakeoverRequest):
     await set_human_takeover_status(user_id, request.is_human)
     return {"status": "success"}
 
-@app.get("/takeover/{user_id}", dependencies=[Depends(get_current_user)])
+@app.get("/takeover/{user_id}")
 async def get_takeover(user_id: str):
     return {"is_human": await get_human_takeover_status(user_id)}
 
