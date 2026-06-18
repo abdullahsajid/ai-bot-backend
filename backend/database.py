@@ -21,6 +21,9 @@ integrations_collection = db["integrations"]
 admins_collection = db["admins"]
 otp_collection = db["otps"]
 knowledge_collection = db["knowledge"]
+tickets_collection = db["tickets"]
+operating_hours_collection = db["operating_hours"]
+bans_collection = db["bans"]
 
 async def add_knowledge(filename, content):
     await knowledge_collection.insert_one({
@@ -105,12 +108,14 @@ async def get_active_conversations(limit=20, skip=0):
             c["owner_name"] = u.get("owner_name", None)
             c["wait_since"] = u.get("wait_since", None)
             c["customer_name"] = u.get("customer_name", u.get("username", None))
+            c["customer_email"] = u.get("customer_email", None)
         else:
             c["status"] = "new"
             c["owner_email"] = None
             c["owner_name"] = None
             c["wait_since"] = None
             c["customer_name"] = None
+            c["customer_email"] = None
     return convs
 
 async def get_faqs():
@@ -336,14 +341,14 @@ async def verify_otp(email: str, otp: str):
     await otp_collection.delete_one({"email": email})
     return True
 
-async def create_admin(email, password, name="Staff Member", role="SUPPORT AGENT", permissions=None):
+async def create_admin(email, password, name="Staff Member", role="SUPPORT AGENT", permissions=None, avatar_url=""):
     # Check if exists
     existing = await admins_collection.find_one({"email": email})
     if existing:
         return False
     
     if permissions is None:
-        if role == "SUPER ADMIN":
+        if role == "SUPER ADMIN" or role == "Admin":
             permissions = ["all"]
         else:
             permissions = ["chat", "knowledge"] # Default permissions for support agents
@@ -355,10 +360,12 @@ async def create_admin(email, password, name="Staff Member", role="SUPPORT AGENT
         "created_at": datetime.utcnow(),
         "is_2fa_enabled": False,
         "role": role,
-        "permissions": permissions
+        "permissions": permissions,
+        "avatar_url": avatar_url
     }
     await admins_collection.insert_one(admin_user)
     return True
+
 
 async def get_all_staff():
     cursor = admins_collection.find({}, {"password": 0}) # Don't return passwords
@@ -471,3 +478,224 @@ async def add_macro(title: str, content: str):
 async def delete_macro(macro_id: str):
     await db["macros"].delete_one({"_id": ObjectId(macro_id)})
     return True
+
+# --- Support Ticketing & Operating Hours & Bans ---
+
+async def create_ticket(customer_name: str, customer_email: str, subject: str, description: str, category: str):
+    import random
+    import string
+    
+    # Generate unique ticket reference
+    for _ in range(10): # try 10 times to avoid collision
+        ref = "LUMO-" + "".join(random.choices(string.digits, k=6))
+        exists = await tickets_collection.find_one({"ticket_ref": ref})
+        if not exists:
+            ticket_ref = ref
+            break
+    else:
+        ticket_ref = "LUMO-" + "".join(random.choices(string.digits, k=8))
+        
+    ticket = {
+        "ticket_ref": ticket_ref,
+        "customer_name": customer_name,
+        "customer_email": customer_email,
+        "subject": subject,
+        "category": category,
+        "status": "open",
+        "assigned_agent_email": None,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "last_activity_by": "customer",
+        "messages": [
+            {
+                "sender_type": "customer",
+                "sender_name": customer_name,
+                "message": description,
+                "timestamp": datetime.utcnow()
+            }
+        ]
+    }
+    await tickets_collection.insert_one(ticket)
+    return ticket
+
+async def get_all_tickets(status: str = None, agent_email: str = None, limit: int = 50, skip: int = 0):
+    query = {}
+    if status:
+        query["status"] = status
+    if agent_email:
+        query["assigned_agent_email"] = agent_email
+        
+    cursor = tickets_collection.find(query).sort("updated_at", -1).skip(skip).limit(limit)
+    tickets = await cursor.to_list(length=limit)
+    for t in tickets:
+        t["_id"] = str(t["_id"])
+    return tickets
+
+async def get_ticket(ticket_ref: str):
+    ticket = await tickets_collection.find_one({"ticket_ref": ticket_ref})
+    if ticket:
+        ticket["_id"] = str(ticket["_id"])
+    return ticket
+
+async def add_ticket_reply(ticket_ref: str, sender_type: str, sender_name: str, message: str, sender_title: str = None, sender_avatar: str = None):
+    reply = {
+        "sender_type": sender_type,
+        "sender_name": sender_name,
+        "message": message,
+        "timestamp": datetime.utcnow()
+    }
+    if sender_title:
+        reply["sender_title"] = sender_title
+    if sender_avatar:
+        reply["sender_avatar"] = sender_avatar
+        
+    res = await tickets_collection.update_one(
+        {"ticket_ref": ticket_ref},
+        {
+            "$push": {"messages": reply},
+            "$set": {
+                "updated_at": datetime.utcnow(),
+                "last_activity_by": sender_type
+            }
+        }
+    )
+    return res.modified_count > 0
+
+async def update_ticket_status(ticket_ref: str, status: str):
+    res = await tickets_collection.update_one(
+        {"ticket_ref": ticket_ref},
+        {
+            "$set": {
+                "status": status,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    return res.modified_count > 0
+
+async def assign_ticket(ticket_ref: str, agent_email: str):
+    res = await tickets_collection.update_one(
+        {"ticket_ref": ticket_ref},
+        {
+            "$set": {
+                "assigned_agent_email": agent_email,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    return res.modified_count > 0
+
+async def close_inactive_tickets_48h():
+    limit_time = datetime.utcnow() - timedelta(hours=48)
+    # Find tickets that are open/escalated, last reply was by agent, and updated longer than 48 hours ago
+    query = {
+        "status": {"$in": ["open", "escalated"]},
+        "last_activity_by": "agent",
+        "updated_at": {"$lt": limit_time}
+    }
+    
+    # We will log or return the closed references
+    cursor = tickets_collection.find(query, {"ticket_ref": 1})
+    closed_tickets = await cursor.to_list(length=1000)
+    refs = [t["ticket_ref"] for t in closed_tickets]
+    
+    if refs:
+        await tickets_collection.update_many(
+            {"ticket_ref": {"$in": refs}},
+            {
+                "$set": {
+                    "status": "resolved",
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+    return refs
+
+async def get_operating_hours():
+    config = await operating_hours_collection.find_one({"type": "live_chat_hours"})
+    if not config:
+        # Default hours: 9 AM to 5 PM Monday to Friday (UTC)
+        default_schedule = {}
+        days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        for day in days:
+            if day in ["saturday", "sunday"]:
+                default_schedule[day] = {"start": "00:00", "end": "00:00", "enabled": False}
+            else:
+                default_schedule[day] = {"start": "09:00", "end": "17:00", "enabled": True}
+        
+        default_config = {
+            "type": "live_chat_hours",
+            "timezone": "UTC",
+            "schedule": default_schedule
+        }
+        await operating_hours_collection.insert_one(default_config)
+        return default_config
+    return config
+
+async def update_operating_hours(schedule: dict, timezone: str = "UTC"):
+    await operating_hours_collection.update_one(
+        {"type": "live_chat_hours"},
+        {
+            "$set": {
+                "schedule": schedule,
+                "timezone": timezone
+            }
+        },
+        upsert=True
+    )
+    return True
+
+async def ban_customer(ip_address: str, email: str = None, reason: str = ""):
+    ban_doc = {
+        "banned_at": datetime.utcnow(),
+        "reason": reason
+    }
+    if ip_address:
+        ban_doc["ip_address"] = ip_address
+    if email:
+        ban_doc["email"] = email
+        
+    # Check if already banned
+    query = {}
+    if ip_address and email:
+        query = {"$or": [{"ip_address": ip_address}, {"email": email}]}
+    elif ip_address:
+        query = {"ip_address": ip_address}
+    elif email:
+        query = {"email": email}
+        
+    if query:
+        await bans_collection.update_one(query, {"$set": ban_doc}, upsert=True)
+    return True
+
+async def is_customer_banned(ip_address: str = None, email: str = None):
+    if not ip_address and not email:
+        return False
+        
+    query = []
+    if ip_address:
+        query.append({"ip_address": ip_address})
+    if email:
+        query.append({"email": email})
+        
+    ban = await bans_collection.find_one({"$or": query})
+    return ban is not None
+
+async def unban_customer(ip_address: str = None, email: str = None):
+    query = []
+    if ip_address:
+        query.append({"ip_address": ip_address})
+    if email:
+        query.append({"email": email})
+        
+    if query:
+        await bans_collection.delete_many({"$or": query})
+    return True
+
+async def get_banned_customers():
+    cursor = bans_collection.find().sort("banned_at", -1)
+    bans = await cursor.to_list(length=200)
+    for b in bans:
+        b["_id"] = str(b["_id"])
+    return bans
+
