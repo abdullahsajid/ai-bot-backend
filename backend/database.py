@@ -70,9 +70,17 @@ async def set_human_takeover_status(user_id, status):
         upsert=True
     )
 
-async def get_active_conversations(limit=20, skip=0):
+async def get_active_conversations(limit=20, skip=0, platform=None):
+    # Filter by platform if specified, else exclude 'website'
+    match_filter = {}
+    if platform:
+        match_filter = {"platform": platform}
+    else:
+        match_filter = {"platform": {"$ne": "website"}}
+
     # Aggregate to get unique users and their last message
     pipeline = [
+        {"$match": match_filter},
         {"$sort": {"timestamp": -1}},
         {"$group": {
             "_id": {"user_id": "$user_id", "platform": "$platform"},

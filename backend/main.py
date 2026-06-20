@@ -709,9 +709,9 @@ async def get_stats(interval: str = "hourly", email: str = Depends(get_current_u
     }
 
 @app.get("/conversations", dependencies=[Depends(get_current_user)])
-async def get_conversations(limit: int = 20, skip: int = 0, email: str = Depends(get_current_user)):
+async def get_conversations(limit: int = 20, skip: int = 0, platform: Optional[str] = None, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    convos = await get_active_conversations(limit=limit, skip=skip)
+    convos = await get_active_conversations(limit=limit, skip=skip, platform=platform)
     for c in convos: c["user_id"] = c.pop("_id")
     return convos
 
