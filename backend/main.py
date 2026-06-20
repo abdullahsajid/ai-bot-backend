@@ -1248,6 +1248,7 @@ async def send_customer_email(to_email: str, subject: str, html_content: str):
     payload = {
         "from": f"Lumo Support <{sender_email}>",
         "to": [to_email],
+        "reply_to": "support@lumowallet.com",
         "subject": subject,
         "html": html_content
     }
