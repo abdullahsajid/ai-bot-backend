@@ -19,26 +19,48 @@ EMAIL_PASS = "qR}~8E69vd0J^A~7"
 API_URL = "http://localhost:8000/api/tickets/incoming"
 
 def clean_email_body(body):
-    """Clean out quoted original messages from email threads"""
+    """Clean out quoted original messages and multi-line headers from email threads"""
+    if not body:
+        return ""
+        
     # Normalize line endings
     body = body.replace("\r\n", "\n").replace("\r", "\n")
+    
+    # 1. Truncate at common email reply headers (supports multi-line wrapped headers)
+    reply_patterns = [
+        # Matches "On [Date/Author] wrote:" spanning up to 3 lines
+        re.compile(r'(?:^|\n)On\s+(?:(?!\n\n).){1,250}wrote:\s*(?:\n|$)', re.IGNORECASE | re.DOTALL),
+        # Matches "From: " at the start of a line
+        re.compile(r'(?:^|\n)From:\s*', re.IGNORECASE),
+        # Matches "Sent: " at the start of a line
+        re.compile(r'(?:^|\n)Sent:\s*', re.IGNORECASE),
+        # Matches "---Original Message---"
+        re.compile(r'(?:^|\n)-+\s*Original Message\s*-+', re.IGNORECASE),
+        # Matches typical text separator "---" on its own line
+        re.compile(r'(?:^|\n)---\s*(?:\n|$)', re.IGNORECASE)
+    ]
+    
+    # Find the earliest matching header signature
+    earliest_match = len(body)
+    for pattern in reply_patterns:
+        match = pattern.search(body)
+        if match and match.start() < earliest_match:
+            earliest_match = match.start()
+            
+    # Truncate the thread
+    body = body[:earliest_match].strip()
+    
+    # 2. Filter out remaining lines starting with quote symbols (">")
     lines = body.split("\n")
-    cleaned = []
+    cleaned_lines = []
     for line in lines:
         stripped = line.strip()
+        # Skip lines that are just quotes (e.g. "> hello" or ">")
+        if stripped.startswith(">"):
+            continue
+        cleaned_lines.append(line)
         
-        # Break on reply headers: "On ... wrote:" or "From: ..." or "Sent: ..." or "---Original Message---"
-        if (re.match(r"^On\s+.*wrote:\s*$", stripped, re.IGNORECASE) or
-            re.match(r"^On\s+.*,\s+.*wrote:\s*$", stripped, re.IGNORECASE) or
-            re.match(r"^-+Original Message-+$", stripped, re.IGNORECASE) or
-            re.match(r"^From:\s*.*", stripped, re.IGNORECASE) or
-            re.match(r"^Sent:\s*.*", stripped, re.IGNORECASE) or
-            re.match(r"^To:\s*.*", stripped, re.IGNORECASE) or
-            stripped == "---"):
-            break
-        cleaned.append(line)
-        
-    return "\n".join(cleaned).strip()
+    return "\n".join(cleaned_lines).strip()
 
 def extract_body(msg):
     """Extract plain text body from raw email message object"""
