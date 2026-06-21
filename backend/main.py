@@ -1127,11 +1127,21 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
                 "platform": request.platform,
                 "user_id": request.user_id,
                 "message": request.message,
+                "sender_name": admin_profile.get("name", "Live Agent"),
+                "sender_title": admin_profile.get("role", "Support Agent"),
+                "sender_avatar": admin_profile.get("avatar_url", ""),
                 "timestamp": datetime.utcnow().isoformat()
             })
 
         # 2. Save to History
-        await save_chat_history(request.platform, request.user_id, f"[ADMIN]: {request.message}", "N/A")
+        await save_chat_history(
+            request.platform,
+            request.user_id,
+            f"[ADMIN]: {request.message}",
+            "N/A",
+            username=admin_profile.get("name", "Support Agent"),
+            avatar_url=admin_profile.get("avatar_url", "")
+        )
 
         # 3. Update Dashboard Live Chat
         await manager.broadcast({
