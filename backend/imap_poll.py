@@ -20,17 +20,24 @@ API_URL = "http://localhost:8000/api/tickets/incoming"
 
 def clean_email_body(body):
     """Clean out quoted original messages from email threads"""
+    # Normalize line endings
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     lines = body.split("\n")
     cleaned = []
     for line in lines:
         stripped = line.strip()
-        if (re.match(r"^On\s+.*,\s+.* wrote:$", stripped, re.IGNORECASE) or
-            re.match(r"^On\s+.*wrote:$", stripped, re.IGNORECASE) or
+        
+        # Break on reply headers: "On ... wrote:" or "From: ..." or "Sent: ..." or "---Original Message---"
+        if (re.match(r"^On\s+.*wrote:\s*$", stripped, re.IGNORECASE) or
+            re.match(r"^On\s+.*,\s+.*wrote:\s*$", stripped, re.IGNORECASE) or
             re.match(r"^-+Original Message-+$", stripped, re.IGNORECASE) or
-            re.match(r"^From:.*@", stripped, re.IGNORECASE) or
+            re.match(r"^From:\s*.*", stripped, re.IGNORECASE) or
+            re.match(r"^Sent:\s*.*", stripped, re.IGNORECASE) or
+            re.match(r"^To:\s*.*", stripped, re.IGNORECASE) or
             stripped == "---"):
             break
         cleaned.append(line)
+        
     return "\n".join(cleaned).strip()
 
 def extract_body(msg):
