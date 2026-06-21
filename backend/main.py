@@ -1237,33 +1237,32 @@ async def onboarding_endpoint(request: OnboardingRequest, _ = Depends(verify_mob
 # --- Support Ticketing & Geolocation & Operating Hours APIs ---
 
 async def send_customer_email(to_email: str, subject: str, html_content: str):
-    api_key = os.getenv("RESEND_API_KEY", "re_6tZW8cri_KhTzKiV5jbJP2p3oUa7Tei72")
-    sender_email = "support@lumopulse.us"
-    
-    url = "https://api.resend.com/emails"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "from": f"Lumo Support <{sender_email}>",
-        "to": [to_email],
-        "reply_to": "support@lumowallet.com",
-        "subject": subject,
-        "html": html_content
-    }
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
 
+    smtp_server = "mail.lumowallet.com"
+    smtp_port = 465
+    sender_email = "support@lumowallet.com"
+    
+    # Enter your support@lumowallet.com email password below
+    sender_password = "qR}~8E69vd0J^A~7"
+    
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = f"Lumo Support <{sender_email}>"
+    msg["To"] = to_email
+    msg.attach(MIMEText(html_content, "html"))
+    
     try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(url, headers=headers, json=payload, timeout=10)
-            if res.status_code in [200, 201]:
-                return True
-            else:
-                logger.error(f"Resend Email Error: {res.text}")
-                return False
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, [to_email], msg.as_string())
+        return True
     except Exception as e:
-        logger.error(f"Failed to send email via Resend: {e}")
+        logger.error(f"Failed to send email via SMTP: {e}")
         return False
+
 
 @app.post("/api/tickets/create")
 async def api_create_ticket(request: TicketCreateRequest):
