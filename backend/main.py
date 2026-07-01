@@ -245,6 +245,10 @@ class MobileChatRequest(BaseModel):
     user_id: str
     message: str
     screen_context: Optional[str] = "main_wallet"
+    platform: Optional[str] = "mobile"
+    customer_name: Optional[str] = None
+    customer_email: Optional[str] = None
+    location: Optional[str] = None
 
 class TransactionAnalysisRequest(BaseModel):
     user_id: str
@@ -1185,7 +1189,69 @@ async def verify_mobile_secret(x_app_secret: str = Header(None)):
 @app.post("/mobile/chat")
 async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mobile_secret)):
     """Secure endpoint for the Flutter Lumo Wallet assistant."""
-    history_context = await get_user_context("mobile", request.user_id)
+    user_id = request.user_id
+    user_message = request.message
+    platform = request.platform or "mobile"
+
+    from .database import is_customer_banned
+    # Check if user is banned
+    if await is_customer_banned(email=user_id) or await is_customer_banned(ip_address=user_id):
+        raise HTTPException(status_code=403, detail="You have been banned from using the live chat.")
+
+    if request.customer_name or request.customer_email:
+        update_fields = {}
+        if request.customer_name:
+            update_fields["customer_name"] = request.customer_name
+            update_fields["username"] = request.customer_name
+        if request.customer_email:
+            update_fields["customer_email"] = request.customer_email
+        if update_fields:
+            await db["users"].update_one(
+                {"platform": platform, "user_id": str(user_id)},
+                {"$set": update_fields},
+                upsert=True
+            )
+
+    if request.location:
+        await db["users"].update_one(
+            {"platform": platform, "user_id": str(user_id)},
+            {"$set": {"location": request.location}},
+            upsert=True
+        )
+
+    # Manage chat status and waiting timer
+    user_status = "new"
+    u = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
+    if not u:
+        u = await db["users"].find_one({"user_id": str(user_id)})
+    if u:
+        user_status = u.get("status", "new")
+    if user_status == "resolved":
+        await update_conversation_status(platform, user_id, "new")
+        user_status = "new"
+    if user_status == "new":
+        if not u or not u.get("wait_since"):
+            await set_conversation_wait(platform, user_id, datetime.utcnow())
+
+    is_human = await get_human_takeover_status(user_id)
+    if is_human:
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await manager.broadcast({
+            "type": "new_message",
+            "platform": platform,
+            "user_id": user_id,
+            "message": user_message,
+            "response": "[HUMAN_TAKOVER_ACTIVE]",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        return {"response": "A human agent will be with you shortly.", "status": "human_handling"}
+
+    # Check if AI is active
+    from .database import is_platform_active
+    if not await is_platform_active(platform):
+        return {"response": "[AI_DISABLED_BY_ADMIN]", "status": "disabled"}
+
+    history_context = await get_user_context(platform, user_id)
     faqs = await get_faqs()
     knowledge = await get_all_knowledge()
     
@@ -1193,11 +1259,21 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
     mobile_prompt = f"You are Pulse AI inside Lumo Wallet. Current User Screen: {request.screen_context}. Help the user manage their assets securely."
     
     response = await ai_engine.generate_response(
-        "mobile", request.user_id, request.message, 
+        platform, user_id, user_message, 
         context=history_context, faqs=faqs, knowledge=knowledge
     )
     
-    await save_chat_history("mobile", request.user_id, request.message, response)
+    await save_chat_history(platform, user_id, user_message, response)
+    
+    await manager.broadcast({
+        "type": "new_message",
+        "platform": platform,
+        "user_id": user_id,
+        "message": user_message,
+        "response": response,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
     return {"response": response}
 
 @app.post("/mobile/analyze-transaction")

@@ -117,6 +117,8 @@ async def get_active_conversations(limit=20, skip=0, platform=None):
             c["wait_since"] = u.get("wait_since", None)
             c["customer_name"] = u.get("customer_name", u.get("username", None))
             c["customer_email"] = u.get("customer_email", None)
+            c["is_human"] = u.get("is_human_taking_over", False)
+            c["takeover"] = u.get("is_human_taking_over", False)
         else:
             c["status"] = "new"
             c["owner_email"] = None
@@ -124,6 +126,8 @@ async def get_active_conversations(limit=20, skip=0, platform=None):
             c["wait_since"] = None
             c["customer_name"] = None
             c["customer_email"] = None
+            c["is_human"] = False
+            c["takeover"] = False
     return convs
 
 async def get_faqs():
