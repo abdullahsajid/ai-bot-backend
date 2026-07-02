@@ -18,8 +18,8 @@ async def check_and_send_discord_announcement(bot):
     
     if doc:
         last_sent = doc.get("timestamp")
-        # Check if 5 hours have passed (18000 seconds)
-        if last_sent and (now - last_sent).total_seconds() < 18000:
+        # Check if 24 hours have passed (86400 seconds)
+        if last_sent and (now - last_sent).total_seconds() < 86400:
             return
             
     # Fetch configured channels from env
