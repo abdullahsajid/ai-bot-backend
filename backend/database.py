@@ -74,7 +74,13 @@ async def get_active_conversations(limit=20, skip=0, platform=None):
     # Filter by platform if specified, else exclude 'website'
     match_filter = {}
     if platform:
-        match_filter = {"platform": platform}
+        if "," in platform:
+            platforms = [p.strip() for p in platform.split(",") if p.strip()]
+            match_filter = {"platform": {"$in": platforms}}
+        elif platform == "all":
+            match_filter = {}
+        else:
+            match_filter = {"platform": platform}
     else:
         match_filter = {"platform": {"$ne": "website"}}
 
