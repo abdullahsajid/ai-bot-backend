@@ -70,7 +70,7 @@ async def set_human_takeover_status(user_id, status):
         upsert=True
     )
 
-async def get_active_conversations(limit=20, skip=0, platform=None):
+async def get_active_conversations(limit=20, skip=0, platform=None, status=None):
     # Filter by platform if specified, else exclude 'website'
     match_filter = {}
     if platform:
@@ -95,6 +95,57 @@ async def get_active_conversations(limit=20, skip=0, platform=None):
             "username": {"$first": "$username"},
             "avatar_url": {"$first": "$avatar_url"}
         }},
+        {"$lookup": {
+            "from": "users",
+            "let": {"u_id": "$_id.user_id", "plat": "$_id.platform"},
+            "pipeline": [
+                {"$match": {
+                    "$expr": {
+                        "$and": [
+                            {"$eq": ["$user_id", "$$u_id"]},
+                            {"$eq": ["$platform", "$$plat"]}
+                        ]
+                    }
+                }}
+            ],
+            "as": "user_profile"
+        }},
+        {"$unwind": {"path": "$user_profile", "preserveNullAndEmptyArrays": True}}
+    ]
+
+    # Filter by status
+    if status:
+        if status == "resolved":
+            pipeline.append({"$match": {"user_profile.status": "resolved"}})
+        elif status == "banned":
+            pipeline.append({"$match": {"user_profile.status": "banned"}})
+        elif status == "open":
+            pipeline.append({"$match": {
+                "user_profile.is_human_taking_over": True,
+                "user_profile.status": {"$nin": ["resolved", "banned"]}
+            }})
+        elif status == "bot":
+            pipeline.append({"$match": {
+                "$or": [
+                    {"user_profile": {"$exists": False}},
+                    {"user_profile": None},
+                    {
+                        "user_profile.is_human_taking_over": {"$ne": True},
+                        "user_profile.status": {"$nin": ["resolved", "banned"]}
+                    }
+                ]
+            }})
+    else:
+        # Default active chats (not resolved and not banned)
+        pipeline.append({"$match": {
+            "$or": [
+                {"user_profile": {"$exists": False}},
+                {"user_profile": None},
+                {"user_profile.status": {"$nin": ["resolved", "banned"]}}
+            ]
+        }})
+
+    pipeline.extend([
         {"$project": {
             "_id": "$_id.user_id",
             "user_id": "$_id.user_id",
@@ -103,16 +154,18 @@ async def get_active_conversations(limit=20, skip=0, platform=None):
             "timestamp": 1,
             "updated_at": "$timestamp",
             "username": 1,
-            "avatar_url": 1
+            "avatar_url": 1,
+            "user_profile": 1
         }},
         {"$sort": {"timestamp": -1}},
         {"$skip": skip},
         {"$limit": limit}
-    ]
+    ])
+
     cursor = history_collection.aggregate(pipeline)
     convs = await cursor.to_list(length=limit)
     for c in convs:
-        u = await users_collection.find_one({"platform": c["platform"], "user_id": str(c["user_id"])})
+        u = c.pop("user_profile", None)
         if not u:
             # Try fallback without platform for old records
             u = await users_collection.find_one({"user_id": str(c["user_id"])})

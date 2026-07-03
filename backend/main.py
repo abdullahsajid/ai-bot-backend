@@ -117,6 +117,14 @@ async def lifespan(app: FastAPI):
             elif "gpt" in engine.lower():
                 ai_engine.openai_model = engine
                 
+    # Reset all admin statuses to offline on startup
+    try:
+        from .database import db
+        await db["admins"].update_many({}, {"$set": {"status": "offline"}})
+        print("Reset all admin statuses to offline on startup.")
+    except Exception as e:
+        print(f"Failed to reset admin statuses: {e}")
+                
     # Start background cron worker
     asyncio.create_task(cron_worker())
     yield
@@ -139,20 +147,84 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
+        self.agent_connections: Dict[str, Set[WebSocket]] = {} # email -> set of websockets
+        self.mobile_connections: Dict[str, Set[WebSocket]] = {} # user_id -> set of websockets
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, email: str = None):
         await websocket.accept()
         self.active_connections.add(websocket)
+        if email:
+            if email not in self.agent_connections:
+                self.agent_connections[email] = set()
+                # Broadcast that this agent is online
+                await self.broadcast({
+                    "type": "agent_status_update",
+                    "email": email,
+                    "status": "online",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                # Update their status in the database to online
+                try:
+                    from .database import update_admin_status
+                    await update_admin_status(email, "online")
+                except Exception:
+                    pass
+            self.agent_connections[email].add(websocket)
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+    def disconnect(self, websocket: WebSocket, email: str = None):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        if email and email in self.agent_connections:
+            if websocket in self.agent_connections[email]:
+                self.agent_connections[email].remove(websocket)
+            if len(self.agent_connections[email]) == 0:
+                del self.agent_connections[email]
+                # Broadcast that this agent is offline
+                asyncio.create_task(self.broadcast({
+                    "type": "agent_status_update",
+                    "email": email,
+                    "status": "offline",
+                    "timestamp": datetime.utcnow().isoformat()
+                }))
+                # Update their status in the database to offline
+                try:
+                    from .database import update_admin_status
+                    asyncio.create_task(update_admin_status(email, "offline"))
+                except Exception:
+                    pass
+
+    async def connect_mobile(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        if user_id not in self.mobile_connections:
+            self.mobile_connections[user_id] = set()
+        self.mobile_connections[user_id].add(websocket)
+
+    def disconnect_mobile(self, websocket: WebSocket, user_id: str):
+        if user_id in self.mobile_connections:
+            if websocket in self.mobile_connections[user_id]:
+                self.mobile_connections[user_id].remove(websocket)
+            if len(self.mobile_connections[user_id]) == 0:
+                del self.mobile_connections[user_id]
+
+    async def send_to_mobile(self, user_id: str, message: dict):
+        if user_id in self.mobile_connections:
+            for connection in list(self.mobile_connections[user_id]):
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception:
                 pass
+        
+        # Forward message to corresponding mobile socket if active
+        user_id = message.get("user_id")
+        if user_id:
+            await self.send_to_mobile(user_id, message)
 
 manager = ConnectionManager()
 
@@ -596,11 +668,20 @@ async def delete_staff_endpoint(target_email: str, email: str = Depends(get_curr
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    token = websocket.query_params.get("token")
+    email = None
+    if token:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            email = payload.get("sub")
+        except Exception:
+            pass
+
+    await manager.connect(websocket, email)
     try:
         while True: await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(websocket, email)
 
 # --- Internal Notify ---
 
@@ -713,9 +794,9 @@ async def get_stats(interval: str = "hourly", email: str = Depends(get_current_u
     }
 
 @app.get("/conversations", dependencies=[Depends(get_current_user)])
-async def get_conversations(limit: int = 20, skip: int = 0, platform: Optional[str] = None, email: str = Depends(get_current_user)):
+async def get_conversations(limit: int = 20, skip: int = 0, platform: Optional[str] = None, status: Optional[str] = None, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    convos = await get_active_conversations(limit=limit, skip=skip, platform=platform)
+    convos = await get_active_conversations(limit=limit, skip=skip, platform=platform, status=status)
     for c in convos: c["user_id"] = c.pop("_id")
     return convos
 
@@ -745,8 +826,8 @@ class StatusPatchRequest(BaseModel):
 @app.patch("/conversations/{platform}/{user_id}/status")
 async def update_convo_status(platform: str, user_id: str, request: StatusPatchRequest, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    if request.status not in ("new", "in_progress", "resolved"):
-        raise HTTPException(status_code=400, detail="Invalid status. Must be new, in_progress, or resolved.")
+    if request.status not in ("new", "in_progress", "resolved", "banned"):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be new, in_progress, resolved, or banned.")
     
     await update_conversation_status(platform, user_id, request.status)
     if request.status == "resolved":
@@ -1185,6 +1266,60 @@ async def verify_mobile_secret(x_app_secret: str = Header(None)):
     if x_app_secret != expected_secret:
         raise HTTPException(status_code=401, detail="Security Breach: Invalid Mobile App Secret.")
     return True
+
+@app.websocket("/mobile/ws")
+async def mobile_websocket_endpoint(websocket: WebSocket, user_id: str):
+    await manager.connect_mobile(websocket, user_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_mobile(websocket, user_id)
+
+@app.get("/mobile/messages")
+async def mobile_messages_endpoint(user_id: str, platform: str = "app", _ = Depends(verify_mobile_secret)):
+    from .database import db
+    messages = await db["chat_history"].find({"platform": platform, "user_id": user_id}).sort("timestamp", 1).to_list(length=100)
+    result = []
+    for msg in messages:
+        timestamp = msg.get("timestamp")
+        
+        # 1. User/Admin/System message
+        text = msg.get("message", "")
+        if text and text != "N/A":
+            sender = "user"
+            sender_name = "Customer"
+            if text.startswith("[ADMIN]:"):
+                sender = "agent"
+                sender_name = msg.get("username") or "Support Agent"
+                text = text.replace("[ADMIN]:", "").strip()
+            elif text.startswith("[STAFF]:"):
+                sender = "agent"
+                sender_name = msg.get("username") or "Support Agent"
+                text = text.replace("[STAFF]:", "").strip()
+            elif text.startswith("[SYSTEM]:"):
+                sender = "system"
+                sender_name = "System"
+                text = text.replace("[SYSTEM]:", "").strip()
+            
+            result.append({
+                "sender": sender,
+                "message": text,
+                "timestamp": timestamp.isoformat() if timestamp else None,
+                "sender_name": sender_name
+            })
+            
+        # 2. Chatbot response
+        ai_resp = msg.get("response", "")
+        if ai_resp and ai_resp != "N/A" and ai_resp != "undefined":
+            bot_time = timestamp + timedelta(seconds=1) if timestamp else None
+            result.append({
+                "sender": "bot",
+                "message": ai_resp,
+                "timestamp": bot_time.isoformat() if bot_time else None,
+                "sender_name": "Lumo AI"
+            })
+    return result
 
 @app.post("/mobile/chat")
 async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mobile_secret)):
