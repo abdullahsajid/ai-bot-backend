@@ -22,6 +22,30 @@ async def check_and_send_discord_announcement(bot):
         if last_sent and (now - last_sent).total_seconds() < 86400:
             return
             
+    # Try deleting the bot's own previous announcement messages
+    if doc:
+        previous_messages = doc.get("sent_messages")
+        if previous_messages:
+            print(f"🗑️ [DISCORD] Attempting to delete {len(previous_messages)} previous security announcement(s)...")
+            for prev in previous_messages:
+                try:
+                    chan_id = prev.get("channel_id")
+                    msg_id = prev.get("message_id")
+                    if chan_id and msg_id:
+                        channel = bot.get_channel(chan_id)
+                        if not channel:
+                            channel = await bot.fetch_channel(chan_id)
+                        if channel:
+                            try:
+                                msg = await channel.fetch_message(msg_id)
+                                # Delete only this specific message
+                                await msg.delete()
+                                print(f"✅ [DISCORD] Deleted previous message {msg_id} in channel {chan_id}")
+                            except Exception as e:
+                                print(f"⚠️ [DISCORD] Could not delete message {msg_id} in channel {chan_id}: {e}")
+                except Exception as e:
+                    print(f"⚠️ [DISCORD] Error processing deletion for previous message {prev}: {e}")
+
     # Fetch configured channels from env
     channels_str = os.getenv("DISCORD_SECURITY_CHANNELS")
     channel_ids = []
@@ -58,35 +82,48 @@ async def check_and_send_discord_announcement(bot):
             except Exception as e:
                 print(f"❌ [DISCORD] Failed to fetch channel {cid}: {e}")
     else:
-        # Fallback to ALL text channels in all guilds where the bot has permission
+        # Fallback to text channels that match the category ID
+        category_filter = os.getenv("DISCORD_SECURITY_CATEGORY", "1488623220239241316").strip()
         for guild in bot.guilds:
             for channel in guild.text_channels:
                 perms = channel.permissions_for(guild.me)
                 if perms.send_messages:
-                    target_channels.append(channel)
+                    if channel.category:
+                        cat_id = str(channel.category.id)
+                        cat_name = channel.category.name.lower()
+                        if cat_id == category_filter or cat_name == category_filter.lower():
+                            target_channels.append(channel)
                     
     if not target_channels:
         print("⚠️ [DISCORD] No target channels found to send the announcement.")
         return
         
     sent_any = False
+    new_sent_messages = []
     for channel in target_channels:
         try:
+            msg = None
             if os.path.exists(image_path):
                 file = discord.File(image_path, filename="security_alert.png")
-                await channel.send(content=security_text, file=file)
+                msg = await channel.send(content=security_text, file=file)
             else:
-                await channel.send(content=security_text)
+                msg = await channel.send(content=security_text)
+            
             print(f"✅ [DISCORD] Sent security announcement to channel {channel.name} ({channel.id})")
             sent_any = True
+            if msg:
+                new_sent_messages.append({"channel_id": channel.id, "message_id": msg.id})
         except Exception as e:
             print(f"❌ [DISCORD] Failed to send to channel {channel.id}: {e}")
             
     if sent_any:
-        # Update last sent timestamp
+        # Update last sent timestamp and new message mappings for future deletions
         await settings.update_one(
             {"key": "last_security_announcement_discord"},
-            {"$set": {"timestamp": now}},
+            {"$set": {
+                "timestamp": now,
+                "sent_messages": new_sent_messages
+            }},
             upsert=True
         )
 
