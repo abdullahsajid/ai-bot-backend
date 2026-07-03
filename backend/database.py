@@ -101,6 +101,7 @@ async def get_active_conversations(limit=20, skip=0, platform=None):
             "platform": "$_id.platform",
             "last_message": 1,
             "timestamp": 1,
+            "updated_at": "$timestamp",
             "username": 1,
             "avatar_url": 1
         }},
