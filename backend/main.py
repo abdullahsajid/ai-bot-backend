@@ -38,6 +38,28 @@ from .bots.whatsapp import whatsapp_bot
 
 import logging
 
+def is_human_requested(message: str) -> bool:
+    if not message:
+        return False
+    msg_lower = message.lower().strip()
+    direct_words = {
+        "human", "agent", "support", "live chat", "representative", "staff", 
+        "assistance", "helpdesk", "csr", "live support", "operator"
+    }
+    if msg_lower in direct_words:
+        return True
+        
+    trigger_phrases = [
+        "talk to human", "talk to agent", "talk to a human", "talk to an agent",
+        "speak to human", "speak to agent", "speak to a human", "speak to an agent",
+        "human support", "customer support", "customer service", "live support",
+        "live agent", "contact support", "connect to agent", "connect to a live agent",
+        "connect to a human", "representative", "contact agent", "chat with human",
+        "chat with agent", "speak with agent", "speak with human", "human assistance",
+        "human csr", "connect to csr", "talk to staff", "speak to staff"
+    ]
+    return any(phrase in msg_lower for phrase in trigger_phrases)
+
 # Setup Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -486,6 +508,34 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
     if user_status == "new":
         if not u or not u.get("wait_since"):
             await set_conversation_wait(platform, user_id, datetime.utcnow())
+
+    if is_human_requested(user_message):
+        await set_human_takeover_status(user_id, True)
+        await update_conversation_status(platform, user_id, "in_progress")
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "in_progress",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "takeover_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await manager.broadcast({
+            "type": "new_message",
+            "platform": platform,
+            "user_id": user_id,
+            "message": user_message,
+            "response": "[HUMAN_TAKOVER_ACTIVE]",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        return {"response": "A human agent will be with you shortly.", "status": "human_handling"}
 
     is_human = await get_human_takeover_status(user_id)
     if is_human:
@@ -1367,6 +1417,34 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
     if user_status == "new":
         if not u or not u.get("wait_since"):
             await set_conversation_wait(platform, user_id, datetime.utcnow())
+
+    if is_human_requested(user_message):
+        await set_human_takeover_status(user_id, True)
+        await update_conversation_status(platform, user_id, "in_progress")
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "in_progress",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "takeover_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await manager.broadcast({
+            "type": "new_message",
+            "platform": platform,
+            "user_id": user_id,
+            "message": user_message,
+            "response": "[HUMAN_TAKOVER_ACTIVE]",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        return {"response": "A human agent will be with you shortly.", "status": "human_handling"}
 
     is_human = await get_human_takeover_status(user_id)
     if is_human:
