@@ -1828,7 +1828,7 @@ async def api_reply_ticket(ticket_ref: str, request: TicketReplyRequest, email: 
 @app.patch("/api/tickets/{ticket_ref}/status", dependencies=[Depends(get_current_user)])
 async def api_patch_ticket_status(ticket_ref: str, request: TicketStatusRequest, email: str = Depends(get_current_user)):
     from .database import update_ticket_status
-    if request.status not in ("open", "escalated", "resolved"):
+    if request.status not in ("open", "escalated", "resolved", "spam"):
         raise HTTPException(status_code=400, detail="Invalid status")
     await update_ticket_status(ticket_ref, request.status)
     
