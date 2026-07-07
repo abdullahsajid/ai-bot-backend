@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import asyncio
 import re
 import pytz
-from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Form, File, UploadFile, Request, Header
+from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Form, File, UploadFile, Request, Header, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -1718,10 +1718,29 @@ async def api_incoming_email(request: IncomingEmailRequest):
     return {"status": "ticket_created", "ticket_ref": ticket["ticket_ref"]}
 
 @app.get("/api/tickets", dependencies=[Depends(get_current_user)])
-async def api_list_tickets(status: Optional[str] = None, agent_email: Optional[str] = None, limit: int = 50, skip: int = 0, email: str = Depends(get_current_user)):
-    from .database import get_all_tickets
-    tickets = await get_all_tickets(status=status, agent_email=agent_email, limit=limit, skip=skip)
+async def api_list_tickets(response: Response, status: Optional[str] = None, agent_email: Optional[str] = None, limit: int = 50, skip: int = 0, search: Optional[str] = None, email: str = Depends(get_current_user)):
+    from .database import db
+    query = {}
+    if status:
+        query["status"] = status
+    if agent_email:
+        query["assigned_agent_email"] = agent_email
+    if search:
+        search_val = search.strip()
+        query["$or"] = [
+            {"ticket_ref": {"$regex": search_val, "$options": "i"}},
+            {"subject": {"$regex": search_val, "$options": "i"}},
+            {"customer_name": {"$regex": search_val, "$options": "i"}},
+            {"customer_email": {"$regex": search_val, "$options": "i"}}
+        ]
+        
+    total_count = await db["tickets"].count_documents(query)
+    response.headers["X-Total-Count"] = str(total_count)
+    
+    cursor = db["tickets"].find(query).sort("updated_at", -1).skip(skip).limit(limit)
+    tickets = await cursor.to_list(length=limit)
     for t in tickets:
+        t["_id"] = str(t["_id"])
         t["is_unread"] = email.lower() not in [r.lower() for r in t.get("read_by", [])]
     return tickets
 
