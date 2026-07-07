@@ -471,6 +471,14 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
     user_message = request.message
     platform = request.platform or "app"
 
+    # Reset read_by status on incoming message
+    from .database import db
+    await db["users"].update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"read_by": []}},
+        upsert=True
+    )
+
     from .database import is_customer_banned
     # Check if user is banned
     if await is_customer_banned(email=user_id) or await is_customer_banned(ip_address=user_id):
@@ -849,7 +857,9 @@ async def get_stats(interval: str = "hourly", email: str = Depends(get_current_u
 async def get_conversations(limit: int = 20, skip: int = 0, platform: Optional[str] = None, status: Optional[str] = None, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
     convos = await get_active_conversations(limit=limit, skip=skip, platform=platform, status=status)
-    for c in convos: c["user_id"] = c.pop("_id")
+    for c in convos:
+        c["user_id"] = c.pop("_id")
+        c["is_unread"] = email.lower() not in [r.lower() for r in c.get("read_by", [])]
     return convos
 
 @app.get("/messages/{platform}/{user_id}", dependencies=[Depends(get_current_user)])
@@ -869,6 +879,43 @@ async def set_takeover(user_id: str, request: TakeoverRequest):
 @app.get("/takeover/{user_id}")
 async def get_takeover(user_id: str):
     return {"is_human": await get_human_takeover_status(user_id)}
+
+@app.patch("/conversations/{platform}/{user_id}/read")
+async def mark_convo_as_read(platform: str, user_id: str, email: str = Depends(get_current_user)):
+    await require_permission("chat", email)
+    from .database import db
+    
+    # 1. Add agent to read_by array
+    await db["users"].update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$addToSet": {"read_by": email.lower()}},
+        upsert=True
+    )
+    
+    # 2. First-Touch Auto-Assignment
+    convo = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
+    if convo and not convo.get("owner_email"):
+        admin_profile = await db["admins"].find_one({"email": email.lower()})
+        agent_name = admin_profile.get("name", "Support Agent") if admin_profile else "Support Agent"
+        
+        await db["users"].update_one(
+            {"platform": platform, "user_id": str(user_id)},
+            {"$set": {
+                "owner_email": email.lower(),
+                "owner_name": agent_name
+            }}
+        )
+        
+        await manager.broadcast({
+            "type": "conversation_owner_update",
+            "platform": platform,
+            "user_id": user_id,
+            "owner_email": email.lower(),
+            "owner_name": agent_name,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+    return {"status": "success"}
 
 # --- Conversation Upgrades Endpoints ---
 
@@ -1383,6 +1430,14 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
     user_message = request.message
     platform = request.platform or "mobile"
 
+    # Reset read_by status on incoming message
+    from .database import db
+    await db["users"].update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"read_by": []}},
+        upsert=True
+    )
+
     from .database import is_customer_banned
     # Check if user is banned
     if await is_customer_banned(email=user_id) or await is_customer_banned(ip_address=user_id):
@@ -1663,16 +1718,26 @@ async def api_incoming_email(request: IncomingEmailRequest):
     return {"status": "ticket_created", "ticket_ref": ticket["ticket_ref"]}
 
 @app.get("/api/tickets", dependencies=[Depends(get_current_user)])
-async def api_list_tickets(status: Optional[str] = None, agent_email: Optional[str] = None, limit: int = 50, skip: int = 0):
+async def api_list_tickets(status: Optional[str] = None, agent_email: Optional[str] = None, limit: int = 50, skip: int = 0, email: str = Depends(get_current_user)):
     from .database import get_all_tickets
-    return await get_all_tickets(status=status, agent_email=agent_email, limit=limit, skip=skip)
+    tickets = await get_all_tickets(status=status, agent_email=agent_email, limit=limit, skip=skip)
+    for t in tickets:
+        t["is_unread"] = email.lower() not in [r.lower() for r in t.get("read_by", [])]
+    return tickets
 
 @app.get("/api/tickets/{ticket_ref}", dependencies=[Depends(get_current_user)])
-async def api_get_ticket_details(ticket_ref: str):
-    from .database import get_ticket
+async def api_get_ticket_details(ticket_ref: str, email: str = Depends(get_current_user)):
+    from .database import get_ticket, db
     ticket = await get_ticket(ticket_ref)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    await db["tickets"].update_one(
+        {"ticket_ref": ticket_ref},
+        {"$addToSet": {"read_by": email.lower()}}
+    )
+    
+    ticket["is_unread"] = False
     return ticket
 
 @app.post("/api/tickets/{ticket_ref}/reply", dependencies=[Depends(get_current_user)])

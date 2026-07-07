@@ -179,6 +179,7 @@ async def get_active_conversations(limit=20, skip=0, platform=None, status=None)
             c["customer_email"] = u.get("customer_email", None)
             c["is_human"] = u.get("is_human_taking_over", False)
             c["takeover"] = u.get("is_human_taking_over", False)
+            c["read_by"] = u.get("read_by", [])
         else:
             c["status"] = "new"
             c["owner_email"] = None
@@ -188,6 +189,7 @@ async def get_active_conversations(limit=20, skip=0, platform=None, status=None)
             c["customer_email"] = None
             c["is_human"] = False
             c["takeover"] = False
+            c["read_by"] = []
     return convs
 
 async def get_faqs():
@@ -578,6 +580,7 @@ async def create_ticket(customer_name: str, customer_email: str, subject: str, d
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
         "last_activity_by": "customer",
+        "read_by": [],
         "messages": [
             {
                 "sender_type": "customer",
@@ -621,14 +624,18 @@ async def add_ticket_reply(ticket_ref: str, sender_type: str, sender_name: str, 
     if sender_avatar:
         reply["sender_avatar"] = sender_avatar
         
+    set_fields = {
+        "updated_at": datetime.utcnow(),
+        "last_activity_by": sender_type
+    }
+    if sender_type == "customer":
+        set_fields["read_by"] = []
+
     res = await tickets_collection.update_one(
         {"ticket_ref": ticket_ref},
         {
             "$push": {"messages": reply},
-            "$set": {
-                "updated_at": datetime.utcnow(),
-                "last_activity_by": sender_type
-            }
+            "$set": set_fields
         }
     )
     return res.modified_count > 0
