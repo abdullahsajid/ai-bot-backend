@@ -196,33 +196,33 @@ class MyDiscordBot(commands.Bot):
         if is_directly_mentioned:
             user_message = user_message.replace(f'<@!{self.user.id}>', '').replace(f'<@{self.user.id}>', '').strip()
 
-        # 4. Smart Intervention / Continuity
+        # 4. Smart Intervention / Continuity (Disabled for now: only mention or DM triggers a response)
         should_respond = is_dm or is_directly_mentioned
         
-        if not should_respond and message.guild:
-            print(f"🔍 [DISCORD] Checking continuity/intent for: {user_id}")
-            # Check for Continuity
-            is_continuity = False
-            
-            try:
-                last_chats = await get_user_context("discord", composite_id, limit=1)
-                if last_chats:
-                    last_chat = last_chats[0]
-                    if last_chat.get('response') and "[AI_DISABLED_OR_HUMAN_ACTIVE]" not in last_chat['response']:
-                        last_ts = last_chat.get('timestamp')
-                        if last_ts:
-                            now = datetime.now(pytz.UTC)
-                            if (now - last_ts.replace(tzinfo=pytz.UTC)) < timedelta(minutes=10):
-                                is_continuity = True
-                                print("✅ [DISCORD] Continuity detected (10m window)")
-            except Exception as e:
-                print(f"⚠️ [DISCORD] History check error: {e}")
-            
-            if is_continuity:
-                should_respond = True
-            else:
-                # No smart intervention; only mention or DM triggers a response
-                should_respond = False
+        # if not should_respond and message.guild:
+        #     print(f"🔍 [DISCORD] Checking continuity/intent for: {user_id}")
+        #     # Check for Continuity
+        #     is_continuity = False
+        #     
+        #     try:
+        #         last_chats = await get_user_context("discord", composite_id, limit=1)
+        #         if last_chats:
+        #             last_chat = last_chats[0]
+        #             if last_chat.get('response') and "[AI_DISABLED_OR_HUMAN_ACTIVE]" not in last_chat['response']:
+        #                 last_ts = last_chat.get('timestamp')
+        #                 if last_ts:
+        #                     now = datetime.now(pytz.UTC)
+        #                     if (now - last_ts.replace(tzinfo=pytz.UTC)) < timedelta(minutes=10):
+        #                         is_continuity = True
+        #                         print("✅ [DISCORD] Continuity detected (10m window)")
+        #     except Exception as e:
+        #         print(f"⚠️ [DISCORD] History check error: {e}")
+        #     
+        #     if is_continuity:
+        #         should_respond = True
+        #     else:
+        #         # No smart intervention; only mention or DM triggers a response
+        #         should_respond = False
 
         if not should_respond:
             return
