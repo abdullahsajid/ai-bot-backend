@@ -471,11 +471,11 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
     user_message = request.message
     platform = request.platform or "app"
 
-    # Reset read_by status on incoming message
+    # Reset is_unread status on incoming message
     from .database import db
     await db["users"].update_one(
         {"platform": platform, "user_id": str(user_id)},
-        {"$set": {"read_by": []}},
+        {"$set": {"is_unread": True}},
         upsert=True
     )
 
@@ -859,7 +859,7 @@ async def get_conversations(limit: int = 20, skip: int = 0, platform: Optional[s
     convos = await get_active_conversations(limit=limit, skip=skip, platform=platform, status=status)
     for c in convos:
         c["user_id"] = c.pop("_id")
-        c["is_unread"] = email.lower() not in [r.lower() for r in c.get("read_by", [])]
+        c["is_unread"] = c.get("is_unread", True)
     return convos
 
 @app.get("/messages/{platform}/{user_id}", dependencies=[Depends(get_current_user)])
@@ -885,10 +885,10 @@ async def mark_convo_as_read(platform: str, user_id: str, email: str = Depends(g
     await require_permission("chat", email)
     from .database import db
     
-    # 1. Add agent to read_by array
+    # 1. Mark as read globally
     await db["users"].update_one(
         {"platform": platform, "user_id": str(user_id)},
-        {"$addToSet": {"read_by": email.lower()}},
+        {"$set": {"is_unread": False}},
         upsert=True
     )
     
@@ -1430,11 +1430,11 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
     user_message = request.message
     platform = request.platform or "mobile"
 
-    # Reset read_by status on incoming message
+    # Reset is_unread status on incoming message
     from .database import db
     await db["users"].update_one(
         {"platform": platform, "user_id": str(user_id)},
-        {"$set": {"read_by": []}},
+        {"$set": {"is_unread": True}},
         upsert=True
     )
 
@@ -1741,7 +1741,7 @@ async def api_list_tickets(response: Response, status: Optional[str] = None, age
     tickets = await cursor.to_list(length=limit)
     for t in tickets:
         t["_id"] = str(t["_id"])
-        t["is_unread"] = email.lower() not in [r.lower() for r in t.get("read_by", [])]
+        t["is_unread"] = t.get("is_unread", True)
     return tickets
 
 @app.get("/api/tickets/{ticket_ref}", dependencies=[Depends(get_current_user)])
@@ -1753,7 +1753,7 @@ async def api_get_ticket_details(ticket_ref: str, email: str = Depends(get_curre
     
     await db["tickets"].update_one(
         {"ticket_ref": ticket_ref},
-        {"$addToSet": {"read_by": email.lower()}}
+        {"$set": {"is_unread": False}}
     )
     
     ticket["is_unread"] = False
