@@ -42,6 +42,8 @@ def is_human_requested(message: str) -> bool:
     if not message:
         return False
     msg_lower = message.lower().strip()
+    if "customer identification submitted" in msg_lower:
+        return True
     direct_words = {
         "human", "agent", "support", "live chat", "representative", "staff", 
         "assistance", "helpdesk", "csr", "live support", "operator"
@@ -1361,6 +1363,9 @@ async def mobile_messages_endpoint(user_id: str, platform: str = "app", _ = Depe
             
         # 2. Chatbot response
         ai_resp = msg.get("response", "")
+        if ai_resp == "[HUMAN_TAKOVER_ACTIVE]":
+            ai_resp = "A human agent will be with you shortly."
+
         if ai_resp and ai_resp != "N/A" and ai_resp != "undefined":
             bot_time = timestamp + timedelta(seconds=1) if timestamp else None
             result.append({
