@@ -957,6 +957,44 @@ async def update_convo_owner(platform: str, user_id: str, request: OwnerPatchReq
         admin_profile = await get_admin_profile(request.owner_email)
         owner_name = admin_profile.get("name", "Staff Member")
         
+        # Auto trigger human handoff and move to Open (in_progress)
+        await set_human_takeover_status(user_id, True)
+        await update_conversation_status(platform, user_id, "in_progress")
+        
+        await manager.broadcast({
+            "type": "takeover_status",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "in_progress",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    else:
+        # Auto remove human handoff and return to bot
+        await set_human_takeover_status(user_id, False)
+        await update_conversation_status(platform, user_id, "bot")
+        
+        await manager.broadcast({
+            "type": "takeover_status",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": False,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "bot",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
     await update_conversation_owner(platform, user_id, request.owner_email, owner_name)
     await manager.broadcast({
         "type": "conversation_owner_update",
