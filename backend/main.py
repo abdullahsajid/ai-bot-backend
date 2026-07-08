@@ -1574,7 +1574,13 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
             "response": "[HUMAN_TAKOVER_ACTIVE]",
             "timestamp": datetime.utcnow().isoformat()
         })
-        return {"response": "A human agent will be with you shortly.", "status": "human_handling"}
+        return {
+            "response": "A human agent will be with you shortly.", 
+            "status": "human_handling",
+            "bot_name": "Lumo AI",
+            "bot_title": "AI Assistant",
+            "bot_avatar": "assets/images/favicon.png"
+        }
 
     is_human = await get_human_takeover_status(user_id)
     if is_human:
@@ -1587,12 +1593,24 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
             "response": "[HUMAN_TAKOVER_ACTIVE]",
             "timestamp": datetime.utcnow().isoformat()
         })
-        return {"response": "A human agent will be with you shortly.", "status": "human_handling"}
+        return {
+            "response": "A human agent will be with you shortly.", 
+            "status": "human_handling",
+            "bot_name": "Lumo AI",
+            "bot_title": "AI Assistant",
+            "bot_avatar": "assets/images/favicon.png"
+        }
 
     # Check if AI is active
     from .database import is_platform_active
     if not await is_platform_active(platform):
-        return {"response": "[AI_DISABLED_BY_ADMIN]", "status": "disabled"}
+        return {
+            "response": "[AI_DISABLED_BY_ADMIN]", 
+            "status": "disabled",
+            "bot_name": "Lumo AI",
+            "bot_title": "AI Assistant",
+            "bot_avatar": "assets/images/favicon.png"
+        }
 
     history_context = await get_user_context(platform, user_id)
     faqs = await get_faqs()
@@ -1617,7 +1635,12 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
         "timestamp": datetime.utcnow().isoformat()
     })
     
-    return {"response": response}
+    return {
+        "response": response,
+        "bot_name": "Lumo AI",
+        "bot_title": "AI Assistant",
+        "bot_avatar": "assets/images/favicon.png"
+    }
 
 @app.post("/mobile/analyze-transaction")
 async def analyze_transaction_endpoint(request: TransactionAnalysisRequest, _ = Depends(verify_mobile_secret)):
