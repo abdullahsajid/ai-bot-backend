@@ -77,6 +77,7 @@ logger = logging.getLogger("PulseAI")
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key_here")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # 1 day
+WEBSITE_URL = os.getenv("WEBSITE_URL", "http://localhost/lumo-new-web-php")
 
 async def release_inactive_takeovers_30m():
     # Find all users with active human takeover
@@ -1304,6 +1305,17 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
                     raise HTTPException(status_code=res.status_code, detail=f"Discord API Error: {res.text}")
 
         elif request.platform in ('app', 'website'):
+            # Format role to clean title
+            raw_role = admin_profile.get("role", "Support Agent")
+            if raw_role == "ADMIN":
+                sender_title = "Administrator"
+            elif raw_role == "CS_MANAGER":
+                sender_title = "CS Manager"
+            elif raw_role == "CS_STAFF":
+                sender_title = "Support Specialist"
+            else:
+                sender_title = raw_role.replace("_", " ").title()
+
             # For mobile app / website users, deliver via WebSocket broadcast
             # The client must listen to the WebSocket and render this as a staff message
             await manager.broadcast({
@@ -1312,7 +1324,7 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
                 "user_id": request.user_id,
                 "message": request.message,
                 "sender_name": admin_profile.get("name", "Live Agent"),
-                "sender_title": admin_profile.get("role", "Support Agent"),
+                "sender_title": sender_title,
                 "sender_avatar": admin_profile.get("avatar_url", ""),
                 "timestamp": datetime.utcnow().isoformat()
             })
@@ -1327,6 +1339,17 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
             avatar_url=admin_profile.get("avatar_url", "")
         )
 
+        # Format role to clean title for dashboard sync too
+        raw_role = admin_profile.get("role", "Support Agent")
+        if raw_role == "ADMIN":
+            sender_title = "Administrator"
+        elif raw_role == "CS_MANAGER":
+            sender_title = "CS Manager"
+        elif raw_role == "CS_STAFF":
+            sender_title = "Support Specialist"
+        else:
+            sender_title = raw_role.replace("_", " ").title()
+
         # 3. Update Dashboard Live Chat
         await manager.broadcast({
             "type": "new_message",
@@ -1334,7 +1357,10 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
             "user_id": request.user_id,
             "message": f"[ADMIN]: {request.message}",
             "response": "N/A",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "sender_name": admin_profile.get("name", "Support Agent"),
+            "sender_title": sender_title,
+            "sender_avatar": admin_profile.get("avatar_url", "")
         })
 
         return {"status": "success"}
@@ -1379,6 +1405,11 @@ async def mobile_websocket_endpoint(websocket: WebSocket, user_id: str):
 async def mobile_messages_endpoint(user_id: str, platform: str = "app", _ = Depends(verify_mobile_secret)):
     from .database import db
     messages = await db["chat_history"].find({"platform": platform, "user_id": user_id}).sort("timestamp", 1).to_list(length=100)
+    
+    # Pre-fetch admins to avoid DB queries inside loops
+    admins = await db["admins"].find().to_list(length=100)
+    admin_map = {a.get("name"): a for a in admins if a.get("name")}
+    
     result = []
     for msg in messages:
         timestamp = msg.get("timestamp")
@@ -1388,25 +1419,60 @@ async def mobile_messages_endpoint(user_id: str, platform: str = "app", _ = Depe
         if text and text != "N/A":
             sender = "user"
             sender_name = "Customer"
+            sender_title = None
+            sender_avatar = None
+            
+            is_agent = False
             if text.startswith("[ADMIN]:"):
-                sender = "agent"
+                is_agent = True
                 sender_name = msg.get("username") or "Support Agent"
                 text = text.replace("[ADMIN]:", "").strip()
             elif text.startswith("[STAFF]:"):
-                sender = "agent"
+                is_agent = True
                 sender_name = msg.get("username") or "Support Agent"
                 text = text.replace("[STAFF]:", "").strip()
             elif text.startswith("[SYSTEM]:"):
                 sender = "system"
                 sender_name = "System"
                 text = text.replace("[SYSTEM]:", "").strip()
+                
+            if is_agent:
+                sender = "agent"
+                # Resolve avatar and role/title
+                admin_doc = admin_map.get(sender_name)
+                if admin_doc:
+                    raw_avatar = admin_doc.get("avatar_url") or msg.get("avatar_url") or ""
+                    raw_role = admin_doc.get("role", "Support Agent")
+                    
+                    if raw_role == "ADMIN":
+                        sender_title = "Administrator"
+                    elif raw_role == "CS_MANAGER":
+                        sender_title = "CS Manager"
+                    elif raw_role == "CS_STAFF":
+                        sender_title = "Support Specialist"
+                    else:
+                        sender_title = raw_role.replace("_", " ").title()
+                else:
+                    raw_avatar = msg.get("avatar_url") or ""
+                    sender_title = "Support Agent"
+                
+                # Return raw avatar relative path as stored in DB
+                if raw_avatar:
+                    sender_avatar = raw_avatar
+                else:
+                    sender_avatar = ""
             
-            result.append({
+            msg_obj = {
                 "sender": sender,
                 "message": text,
                 "timestamp": timestamp.isoformat() if timestamp else None,
                 "sender_name": sender_name
-            })
+            }
+            if sender == "agent":
+                msg_obj["sender_title"] = sender_title
+                msg_obj["sender_avatar"] = sender_avatar
+                
+            result.append(msg_obj)
             
         # 2. Chatbot response
         ai_resp = msg.get("response", "")
@@ -1415,11 +1481,15 @@ async def mobile_messages_endpoint(user_id: str, platform: str = "app", _ = Depe
 
         if ai_resp and ai_resp != "N/A" and ai_resp != "undefined":
             bot_time = timestamp + timedelta(seconds=1) if timestamp else None
+            bot_avatar = "assets/images/favicon.png"
+            
             result.append({
                 "sender": "bot",
                 "message": ai_resp,
                 "timestamp": bot_time.isoformat() if bot_time else None,
-                "sender_name": "Lumo AI"
+                "sender_name": "Lumo AI",
+                "sender_title": "AI Assistant",
+                "sender_avatar": bot_avatar
             })
     return result
 
