@@ -517,7 +517,10 @@ async def set_customer_name(platform, user_id, customer_name: str):
 async def update_admin_status(email: str, status: str):
     await admins_collection.update_one(
         {"email": email},
-        {"$set": {"status": status}}
+        {"$set": {
+            "status": status,
+            "last_active": datetime.utcnow()
+        }}
     )
 
 async def suggest_kb_articles(query: str, limit: int = 3):

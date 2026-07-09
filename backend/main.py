@@ -2114,7 +2114,15 @@ async def get_operating_hours_status():
             current_time = now_local.time()
             
             if start_time <= current_time <= end_time:
-                is_open = True
+                from datetime import datetime as dt, timedelta
+                cutoff = dt.utcnow() - timedelta(seconds=90)
+                from .database import db
+                online_count = await db["admins"].count_documents({
+                    "status": "online",
+                    "last_active": {"$gte": cutoff}
+                })
+                if online_count > 0:
+                    is_open = True
         except Exception:
             pass
             
