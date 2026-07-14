@@ -63,10 +63,16 @@ async def get_human_takeover_status(user_id):
     user = await users_collection.find_one({"user_id": str(user_id)})
     return user.get("is_human_taking_over", False) if user else False
 
-async def set_human_takeover_status(user_id, status):
+async def set_human_takeover_status(user_id, status, platform=None):
+    query = {"user_id": str(user_id)}
+    update_fields = {"is_human_taking_over": status}
+    if platform:
+        query["platform"] = platform
+        update_fields["platform"] = platform
+        
     await users_collection.update_one(
-        {"user_id": str(user_id)},
-        {"$set": {"is_human_taking_over": status}},
+        query,
+        {"$set": update_fields},
         upsert=True
     )
 

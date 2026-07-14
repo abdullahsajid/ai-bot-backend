@@ -99,7 +99,7 @@ async def release_inactive_takeovers_30m():
             last_ts = last_msg.get("timestamp")
             if last_ts and (now - last_ts).total_seconds() > 1800: # 30 minutes
                 # Disable human takeover
-                await set_human_takeover_status(user_id, False)
+                await set_human_takeover_status(user_id, False, platform)
                 # Save system message
                 await save_chat_history(platform, user_id, "Live Chat session expired. PulseAI is back online.", "N/A", username="System")
                 # Broadcast status update
@@ -521,7 +521,7 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
             await set_conversation_wait(platform, user_id, datetime.utcnow())
 
     if is_human_requested(user_message):
-        await set_human_takeover_status(user_id, True)
+        await set_human_takeover_status(user_id, True, platform)
         await update_conversation_status(platform, user_id, "in_progress")
         await manager.broadcast({
             "type": "conversation_status_update",
@@ -935,11 +935,11 @@ async def update_convo_status(platform: str, user_id: str, request: StatusPatchR
     if status_mapped == "resolved":
         await set_conversation_wait(platform, user_id, None)
         # Auto-release human takeover when resolved
-        await set_human_takeover_status(user_id, False)
+        await set_human_takeover_status(user_id, False, platform)
     elif status_mapped == "new":
         await set_conversation_wait(platform, user_id, datetime.utcnow())
         # Auto-release human takeover when status is set back to bot (new)
-        await set_human_takeover_status(user_id, False)
+        await set_human_takeover_status(user_id, False, platform)
         
     await manager.broadcast({
         "type": "conversation_status_update",
@@ -962,7 +962,7 @@ async def update_convo_owner(platform: str, user_id: str, request: OwnerPatchReq
         owner_name = admin_profile.get("name", "Staff Member")
         
         # Auto trigger human handoff and move to Open (in_progress)
-        await set_human_takeover_status(user_id, True)
+        await set_human_takeover_status(user_id, True, platform)
         await update_conversation_status(platform, user_id, "in_progress")
         
         await manager.broadcast({
@@ -981,7 +981,7 @@ async def update_convo_owner(platform: str, user_id: str, request: OwnerPatchReq
         })
     else:
         # Auto remove human handoff and return to bot
-        await set_human_takeover_status(user_id, False)
+        await set_human_takeover_status(user_id, False, platform)
         await update_conversation_status(platform, user_id, "bot")
         
         await manager.broadcast({
@@ -1029,7 +1029,7 @@ async def update_convo_customer_name(platform: str, user_id: str, request: NameP
 @app.post("/takeover/{platform}/{user_id}")
 async def set_takeover_platform(platform: str, user_id: str, request: TakeoverRequest, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    await set_human_takeover_status(user_id, request.is_human)
+    await set_human_takeover_status(user_id, request.is_human, platform)
     
     admin_profile = await get_admin_profile(email)
     admin_name = admin_profile.get("name", "Staff Member")
@@ -1273,7 +1273,7 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
             {"$set": {"pending_name_collection": False}}
         )
         # Proceed with human takeover
-        await set_human_takeover_status(user_id, True)
+        await set_human_takeover_status(user_id, True, platform)
         await update_conversation_status(platform, user_id, "in_progress")
         await set_conversation_wait(platform, user_id, datetime.utcnow())
         
@@ -1318,7 +1318,7 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
             whatsapp_bot.send_message(user_id, "To connect you with an agent, could you please tell me your name?")
             return {"status": "collecting_name"}
             
-        await set_human_takeover_status(user_id, True)
+        await set_human_takeover_status(user_id, True, platform)
         await update_conversation_status(platform, user_id, "in_progress")
         await set_conversation_wait(platform, user_id, datetime.utcnow())
         
@@ -1387,7 +1387,7 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
 
 @app.post("/send-manual")
 async def send_manual(request: ManualResponseRequest, email: str = Depends(get_current_user)):
-    await set_human_takeover_status(request.user_id, True)
+    await set_human_takeover_status(request.user_id, True, request.platform)
     admin_profile = await get_admin_profile(email)
     admin_name = admin_profile.get("name", "Staff Member")
     
@@ -1705,7 +1705,7 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
             await set_conversation_wait(platform, user_id, datetime.utcnow())
 
     if is_human_requested(user_message):
-        await set_human_takeover_status(user_id, True)
+        await set_human_takeover_status(user_id, True, platform)
         await update_conversation_status(platform, user_id, "in_progress")
         await manager.broadcast({
             "type": "conversation_status_update",
