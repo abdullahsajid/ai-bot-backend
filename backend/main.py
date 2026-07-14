@@ -1382,6 +1382,21 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
     await update_conversation_owner(request.platform, request.user_id, email, admin_name)
     await set_conversation_wait(request.platform, request.user_id, None)
     
+    await manager.broadcast({
+        "type": "conversation_status_update",
+        "platform": request.platform,
+        "user_id": request.user_id,
+        "status": "in_progress",
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    await manager.broadcast({
+        "type": "takeover_status_update",
+        "platform": request.platform,
+        "user_id": request.user_id,
+        "is_human": True,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
     try:
         # 1. Deliver to Platform (Skip if it's a private note)
         if request.message.startswith("[NOTE]:"):
