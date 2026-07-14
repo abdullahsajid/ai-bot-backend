@@ -1259,6 +1259,13 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
     user_id = From.replace("whatsapp:", "")
     platform = "whatsapp"
     
+    # Mark conversation as unread on incoming message
+    await db["users"].update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"is_unread": True}},
+        upsert=True
+    )
+    
     # 0. Check if user is in name collection flow
     user_record = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
     is_pending_name = user_record.get("pending_name_collection", False) if user_record else False
