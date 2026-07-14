@@ -926,22 +926,26 @@ class StatusPatchRequest(BaseModel):
 @app.patch("/conversations/{platform}/{user_id}/status")
 async def update_convo_status(platform: str, user_id: str, request: StatusPatchRequest, email: str = Depends(get_current_user)):
     await require_permission("chat", email)
-    if request.status not in ("new", "in_progress", "resolved", "banned"):
-        raise HTTPException(status_code=400, detail="Invalid status. Must be new, in_progress, resolved, or banned.")
+    if request.status not in ("new", "bot", "in_progress", "resolved", "banned"):
+        raise HTTPException(status_code=400, detail="Invalid status. Must be new, bot, in_progress, resolved, or banned.")
     
-    await update_conversation_status(platform, user_id, request.status)
-    if request.status == "resolved":
+    status_mapped = "new" if request.status == "bot" else request.status
+    await update_conversation_status(platform, user_id, status_mapped)
+    
+    if status_mapped == "resolved":
         await set_conversation_wait(platform, user_id, None)
         # Auto-release human takeover when resolved
         await set_human_takeover_status(user_id, False)
-    elif request.status == "new":
+    elif status_mapped == "new":
         await set_conversation_wait(platform, user_id, datetime.utcnow())
+        # Auto-release human takeover when status is set back to bot (new)
+        await set_human_takeover_status(user_id, False)
         
     await manager.broadcast({
         "type": "conversation_status_update",
         "platform": platform,
         "user_id": user_id,
-        "status": request.status,
+        "status": status_mapped,
         "timestamp": datetime.utcnow().isoformat()
     })
     return {"status": "success"}
