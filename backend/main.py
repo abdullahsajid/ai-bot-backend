@@ -531,7 +531,7 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
             "timestamp": datetime.utcnow().isoformat()
         })
         await manager.broadcast({
-            "type": "takeover_status_update",
+            "type": "takeover_status",
             "platform": platform,
             "user_id": user_id,
             "is_human": True,
@@ -1276,7 +1276,7 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
             "timestamp": datetime.utcnow().isoformat()
         })
         await manager.broadcast({
-            "type": "takeover_status_update",
+            "type": "takeover_status",
             "platform": platform,
             "user_id": user_id,
             "is_human": True,
@@ -1321,7 +1321,7 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
             "timestamp": datetime.utcnow().isoformat()
         })
         await manager.broadcast({
-            "type": "takeover_status_update",
+            "type": "takeover_status",
             "platform": platform,
             "user_id": user_id,
             "is_human": True,
@@ -1394,7 +1394,7 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
         "timestamp": datetime.utcnow().isoformat()
     })
     await manager.broadcast({
-        "type": "takeover_status_update",
+        "type": "takeover_status",
         "platform": request.platform,
         "user_id": request.user_id,
         "is_human": True,
@@ -1706,7 +1706,7 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
             "timestamp": datetime.utcnow().isoformat()
         })
         await manager.broadcast({
-            "type": "takeover_status_update",
+            "type": "takeover_status",
             "platform": platform,
             "user_id": user_id,
             "is_human": True,
