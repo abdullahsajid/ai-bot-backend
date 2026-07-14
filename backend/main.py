@@ -1060,6 +1060,15 @@ async def set_takeover_platform(platform: str, user_id: str, request: TakeoverRe
             "agent_name": admin_name,
             "timestamp": datetime.utcnow().isoformat()
         })
+        
+    await manager.broadcast({
+        "type": "takeover_status",
+        "platform": platform,
+        "user_id": user_id,
+        "is_human": request.is_human,
+        "timestamp": datetime.utcnow().isoformat()
+    })
+    
     return {"status": "success", "is_human": request.is_human}
 
 class AgentStatusRequest(BaseModel):
