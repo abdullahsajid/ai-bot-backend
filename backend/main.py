@@ -1246,6 +1246,39 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
     user_id = From.replace("whatsapp:", "")
     platform = "whatsapp"
     
+    # Check if user requested a human
+    if is_human_requested(Body):
+        await set_human_takeover_status(user_id, True)
+        await update_conversation_status(platform, user_id, "in_progress")
+        await set_conversation_wait(platform, user_id, datetime.utcnow())
+        
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "in_progress",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "takeover_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=ProfileName)
+        await manager.broadcast({
+            "type": "new_message",
+            "platform": platform,
+            "user_id": user_id,
+            "message": Body,
+            "response": "[HUMAN_TAKOVER_ACTIVE]",
+            "username": ProfileName,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        whatsapp_bot.send_message(user_id, "A human agent will be with you shortly.")
+        return {"status": "manual_or_disabled"}
+
     # 1. Always Notify Dashboard & Save History (Safety first)
     is_human = await get_human_takeover_status(user_id)
     
