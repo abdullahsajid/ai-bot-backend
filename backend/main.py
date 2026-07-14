@@ -1246,8 +1246,20 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
     user_id = From.replace("whatsapp:", "")
     platform = "whatsapp"
     
-    # Check if user requested a human
-    if is_human_requested(Body):
+    # 0. Check if user is in name collection flow
+    user_record = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
+    is_pending_name = user_record.get("pending_name_collection", False) if user_record else False
+
+    if is_pending_name:
+        name_given = Body.strip()
+        # Save customer name
+        await set_customer_name(platform, user_id, name_given)
+        # Clear the flag
+        await db["users"].update_one(
+            {"platform": platform, "user_id": str(user_id)},
+            {"$set": {"pending_name_collection": False}}
+        )
+        # Proceed with human takeover
         await set_human_takeover_status(user_id, True)
         await update_conversation_status(platform, user_id, "in_progress")
         await set_conversation_wait(platform, user_id, datetime.utcnow())
@@ -1266,17 +1278,62 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
             "is_human": True,
             "timestamp": datetime.utcnow().isoformat()
         })
-        await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=ProfileName)
+        await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=name_given)
         await manager.broadcast({
             "type": "new_message",
             "platform": platform,
             "user_id": user_id,
             "message": Body,
             "response": "[HUMAN_TAKOVER_ACTIVE]",
-            "username": ProfileName,
+            "username": name_given,
             "timestamp": datetime.utcnow().isoformat()
         })
-        whatsapp_bot.send_message(user_id, "A human agent will be with you shortly.")
+        whatsapp_bot.send_message(user_id, f"Thanks {name_given}! A human agent will be with you shortly.")
+        return {"status": "manual_or_disabled"}
+
+    # Check if user requested a human
+    if is_human_requested(Body):
+        current_name = user_record.get("customer_name") if user_record else None
+        
+        # If user name is missing, default, or matches phone number, collect it
+        if not current_name or current_name in ["Customer", "WhatsApp User", user_id, f"+{user_id}"]:
+            await db["users"].update_one(
+                {"platform": platform, "user_id": str(user_id)},
+                {"$set": {"pending_name_collection": True}},
+                upsert=True
+            )
+            whatsapp_bot.send_message(user_id, "To connect you with an agent, could you please tell me your name?")
+            return {"status": "collecting_name"}
+            
+        await set_human_takeover_status(user_id, True)
+        await update_conversation_status(platform, user_id, "in_progress")
+        await set_conversation_wait(platform, user_id, datetime.utcnow())
+        
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "in_progress",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "takeover_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=current_name)
+        await manager.broadcast({
+            "type": "new_message",
+            "platform": platform,
+            "user_id": user_id,
+            "message": Body,
+            "response": "[HUMAN_TAKOVER_ACTIVE]",
+            "username": current_name,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        whatsapp_bot.send_message(user_id, f"A human agent will be with you shortly, {current_name}.")
         return {"status": "manual_or_disabled"}
 
     # 1. Always Notify Dashboard & Save History (Safety first)
