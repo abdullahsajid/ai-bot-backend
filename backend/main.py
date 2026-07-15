@@ -418,7 +418,7 @@ async def require_permission(required_perm: str, email: str):
 
 async def send_otp_email(to_email: str, otp: str):
     # Use Resend API (Bypasses DigitalOcean port blocks)
-    api_key = "re_6tZW8cri_KhTzKiV5jbJP2p3oUa7Tei72"
+    api_key = os.getenv("RESEND_API_KEY_OTP") or os.getenv("RESEND_API_KEY")
     sender_email = "security@lumopulse.us" # Verified domain in Resend
     
     url = "https://api.resend.com/emails"
@@ -1852,7 +1852,7 @@ async def onboarding_endpoint(request: OnboardingRequest, _ = Depends(verify_mob
 # --- Support Ticketing & Geolocation & Operating Hours APIs ---
 
 async def send_customer_email(to_email: str, subject: str, html_content: str):
-    api_key = os.getenv("RESEND_API_KEY", "re_gEMAYmWo_FHt74w9VnE4Q9CKC8ugr1FMM")
+    api_key = os.getenv("RESEND_API_KEY_SUPPORT") or os.getenv("RESEND_API_KEY")
     sender_email = "support@lumowallet.com"
     
     url = "https://api.resend.com/emails"
