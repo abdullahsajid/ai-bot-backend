@@ -1266,64 +1266,114 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...), Profile
         upsert=True
     )
     
-    # 0. Check if user is in name collection flow
+    # 0. Check if user is in details collection flow
     user_record = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
-    is_pending_name = user_record.get("pending_name_collection", False) if user_record else False
+    is_pending_details = (
+        user_record.get("pending_name_collection", False) or 
+        user_record.get("pending_details_collection", False)
+    ) if user_record else False
 
-    if is_pending_name:
-        name_given = Body.strip()
-        # Save customer name
-        await set_customer_name(platform, user_id, name_given)
-        # Clear the flag
-        await db["users"].update_one(
-            {"platform": platform, "user_id": str(user_id)},
-            {"$set": {"pending_name_collection": False}}
-        )
-        # Proceed with human takeover
-        await set_human_takeover_status(user_id, True, platform)
-        await update_conversation_status(platform, user_id, "in_progress")
-        await set_conversation_wait(platform, user_id, datetime.utcnow())
+    if is_pending_details:
+        current_name = user_record.get("customer_name") if user_record else None
+        current_email = user_record.get("customer_email") if user_record else None
         
-        await manager.broadcast({
-            "type": "conversation_status_update",
-            "platform": platform,
-            "user_id": user_id,
-            "status": "in_progress",
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        await manager.broadcast({
-            "type": "takeover_status",
-            "platform": platform,
-            "user_id": user_id,
-            "is_human": True,
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=name_given)
-        await manager.broadcast({
-            "type": "new_message",
-            "platform": platform,
-            "user_id": user_id,
-            "message": Body,
-            "response": "[HUMAN_TAKOVER_ACTIVE]",
-            "username": name_given,
-            "timestamp": datetime.utcnow().isoformat()
-        })
-        whatsapp_bot.send_message(user_id, f"Thanks {name_given}! A human agent will be with you shortly.")
-        return {"status": "manual_or_disabled"}
+        text = Body.strip()
+        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+        email_given = email_match.group(0).strip() if email_match else None
+        name_given = None
+        
+        if email_given:
+            # Extract name from the rest of the text
+            remaining_text = text.replace(email_given, "")
+            remaining_text = re.sub(r'[\s,;\-\'\"]+', ' ', remaining_text).strip()
+            if len(remaining_text) >= 2:
+                name_given = remaining_text
+        else:
+            # If no email in message, the whole text might be the name (if name is not yet saved)
+            if len(text) >= 2 and (not current_name or current_name in ["Customer", "WhatsApp User", user_id, f"+{user_id}"]):
+                name_given = text
+                
+        # Update database with what we got
+        update_fields = {}
+        if name_given:
+            update_fields["customer_name"] = name_given
+            update_fields["username"] = name_given
+        if email_given:
+            update_fields["customer_email"] = email_given
+            
+        if update_fields:
+            await db["users"].update_one(
+                {"platform": platform, "user_id": str(user_id)},
+                {"$set": update_fields},
+                upsert=True
+            )
+            
+        # Refresh user record
+        user_record = await db["users"].find_one({"platform": platform, "user_id": str(user_id)})
+        final_name = user_record.get("customer_name") if user_record else None
+        final_email = user_record.get("customer_email") if user_record else None
+        
+        # If we have both, proceed to agent
+        if final_name and final_name not in ["Customer", "WhatsApp User", user_id, f"+{user_id}"] and final_email:
+            # Clear flags
+            await db["users"].update_one(
+                {"platform": platform, "user_id": str(user_id)},
+                {"$set": {"pending_name_collection": False, "pending_details_collection": False}}
+            )
+            # Proceed with human takeover
+            await set_human_takeover_status(user_id, True, platform)
+            await update_conversation_status(platform, user_id, "in_progress")
+            await set_conversation_wait(platform, user_id, datetime.utcnow())
+            
+            await manager.broadcast({
+                "type": "conversation_status_update",
+                "platform": platform,
+                "user_id": user_id,
+                "status": "in_progress",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            await manager.broadcast({
+                "type": "takeover_status",
+                "platform": platform,
+                "user_id": user_id,
+                "is_human": True,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            await save_chat_history(platform, user_id, Body, "[HUMAN_TAKOVER_ACTIVE]", username=final_name)
+            await manager.broadcast({
+                "type": "new_message",
+                "platform": platform,
+                "user_id": user_id,
+                "message": Body,
+                "response": "[HUMAN_TAKOVER_ACTIVE]",
+                "username": final_name,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            whatsapp_bot.send_message(user_id, f"Thanks {final_name}! A human agent will be with you shortly.")
+            return {"status": "manual_or_disabled"}
+        else:
+            # Still missing name or email
+            if not final_name or final_name in ["Customer", "WhatsApp User", user_id, f"+{user_id}"]:
+                whatsapp_bot.send_message(user_id, "Could you please tell me your name?")
+            elif not final_email:
+                whatsapp_bot.send_message(user_id, f"Thanks {final_name}! Could you also please provide your email address?")
+            return {"status": "collecting_details"}
 
     # Check if user requested a human
     if is_human_requested(Body):
         current_name = user_record.get("customer_name") if user_record else None
+        current_email = user_record.get("customer_email") if user_record else None
         
-        # If user name is missing, default, or matches phone number, collect it
-        if not current_name or current_name in ["Customer", "WhatsApp User", user_id, f"+{user_id}"]:
+        # If either is missing, collect them
+        if not current_name or current_name in ["Customer", "WhatsApp User", user_id, f"+{user_id}"] or not current_email:
             await db["users"].update_one(
                 {"platform": platform, "user_id": str(user_id)},
-                {"$set": {"pending_name_collection": True}},
+                {"$set": {"pending_name_collection": True, "pending_details_collection": True}},
                 upsert=True
             )
-            whatsapp_bot.send_message(user_id, "To connect you with an agent, could you please tell me your name?")
-            return {"status": "collecting_name"}
+            whatsapp_bot.send_message(user_id, "To connect you with an agent, could you please reply with your name and email (e.g. John Doe, john@example.com)?")
+            return {"status": "collecting_details"}
             
         await set_human_takeover_status(user_id, True, platform)
         await update_conversation_status(platform, user_id, "in_progress")
