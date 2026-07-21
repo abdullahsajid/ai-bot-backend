@@ -5,6 +5,7 @@ import asyncio
 import re
 import pytz
 from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Form, File, UploadFile, Request, Header, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -155,6 +156,7 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="AI Chatbot Management Dashboard", lifespan=lifespan)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 START_TIME = datetime.utcnow()
 
 # Enable CORS for frontend
@@ -2330,6 +2332,29 @@ async def api_unban_customer(request: BanRequest):
 async def api_get_bans():
     from .database import get_banned_customers
     return await get_banned_customers()
+
+import uuid
+import shutil
+
+@app.post("/api/upload-attachment")
+async def api_upload_attachment(file: UploadFile = File(...)):
+    # Validate file type
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed.")
+    
+    # Generate unique filename
+    ext = file.filename.split('.')[-1]
+    new_filename = f"{uuid.uuid4().hex}_{int(datetime.utcnow().timestamp())}.{ext}"
+    file_path = os.path.join("uploads", new_filename)
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+        
+    public_url = f"https://api.lumopulse.us/uploads/{new_filename}"
+    return {"status": "success", "url": public_url}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
