@@ -156,6 +156,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="AI Chatbot Management Dashboard", lifespan=lifespan)
+import os
+os.makedirs("uploads", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 START_TIME = datetime.utcnow()
 
