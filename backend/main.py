@@ -565,6 +565,36 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
         })
         return {"response": "A human agent will be with you shortly.", "status": "human_handling"}
 
+    # Intercept image attachments and immediately hand over to human agent
+    if "[Attachment:" in user_message:
+        await set_human_takeover_status(user_id, True, platform)
+        await update_conversation_status(platform, user_id, "in_progress")
+        await manager.broadcast({
+            "type": "conversation_status_update",
+            "platform": platform,
+            "user_id": user_id,
+            "status": "in_progress",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        await manager.broadcast({
+            "type": "takeover_status",
+            "platform": platform,
+            "user_id": user_id,
+            "is_human": True,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        resp_msg = "Thanks for the screenshot! I've notified our live support team to take a look and assist you. Please hold on."
+        await save_chat_history(platform, user_id, user_message, resp_msg)
+        await manager.broadcast({
+            "type": "new_message",
+            "platform": platform,
+            "user_id": user_id,
+            "message": user_message,
+            "response": resp_msg,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        return {"response": resp_msg, "status": "human_handling"}
+
     context = await get_user_context(platform, user_id)
     faqs = await get_faqs()
     knowledge = await get_all_knowledge()
