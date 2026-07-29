@@ -1952,17 +1952,42 @@ async def send_customer_email(to_email: str, subject: str, html_content: str):
         "html": html_content
     }
 
+    if api_key:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(url, headers=headers, json=payload, timeout=10)
+                if res.status_code in [200, 201]:
+                    logger.info(f"Successfully sent email via Resend to {to_email}")
+                    return True
+                else:
+                    logger.error(f"Resend Email Error ({res.status_code}): {res.text}")
+        except Exception as e:
+            logger.error(f"Failed to send email via Resend: {e}")
+    else:
+        logger.warning("No RESEND_API_KEY found in environment variables. Attempting PHP SMTP fallback.")
+
+    # Fallback to lumowallet.com PHP SMTP Mailer if Resend fails or key is missing
     try:
+        php_notify_url = "https://lumowallet.com/api/tickets/notify-reply"
+        # Extract clean text from html if possible
+        plain_text = BeautifulSoup(html_content, 'html.parser').get_text()
         async with httpx.AsyncClient() as client:
-            res = await client.post(url, headers=headers, json=payload, timeout=10)
-            if res.status_code in [200, 201]:
+            res = await client.post(php_notify_url, json={
+                "ticket_ref": "SUPPORT",
+                "email": to_email,
+                "customer_name": "Valued Customer",
+                "subject": subject,
+                "reply_message": plain_text or subject
+            }, timeout=10)
+            if res.status_code == 200:
+                logger.info(f"Successfully sent email via PHP SMTP fallback to {to_email}")
                 return True
             else:
-                logger.error(f"Resend Email Error: {res.text}")
-                return False
-    except Exception as e:
-        logger.error(f"Failed to send email via Resend: {e}")
-        return False
+                logger.error(f"PHP SMTP Fallback Error ({res.status_code}): {res.text}")
+    except Exception as fallback_err:
+        logger.error(f"Fallback email send failed: {fallback_err}")
+
+    return False
 
 
 @app.post("/api/tickets/create")
