@@ -168,6 +168,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "x-total-count"]
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
@@ -2101,6 +2102,7 @@ async def api_list_tickets(response: Response, status: Optional[str] = None, age
         
     total_count = await db["tickets"].count_documents(query)
     response.headers["X-Total-Count"] = str(total_count)
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
     
     cursor = db["tickets"].find(query).sort("updated_at", -1).skip(skip).limit(limit)
     tickets = await cursor.to_list(length=limit)
