@@ -2154,7 +2154,15 @@ async def api_reply_ticket(ticket_ref: str, request: TicketReplyRequest, email: 
         raise HTTPException(status_code=500, detail="Failed to add reply")
         
     message_html = request.message.replace('\n', '<br/>')
-    avatar_img_tag = f'<img src="{agent_avatar}" style="width: 48px; height: 48px; border-radius: 50%; object-fit: cover; display: block; margin-bottom: 8px;" />' if agent_avatar else ''
+    avatar_img_tag = ""
+    if agent_avatar and isinstance(agent_avatar, str) and agent_avatar.strip():
+        url_str = agent_avatar.strip()
+        if url_str.startswith("http://") or url_str.startswith("https://"):
+            avatar_img_tag = f'<img src="{url_str}" width="48" height="48" alt="{agent_name}" style="width: 48px; height: 48px; border-radius: 50%; object-fit: cover; display: block; margin-bottom: 8px;" />'
+        elif url_str.startswith("/uploads/") or url_str.startswith("uploads/"):
+            clean_p = url_str if url_str.startswith("/") else f"/{url_str}"
+            full_avatar_url = f"https://api.lumopulse.us{clean_p}"
+            avatar_img_tag = f'<img src="{full_avatar_url}" width="48" height="48" alt="{agent_name}" style="width: 48px; height: 48px; border-radius: 50%; object-fit: cover; display: block; margin-bottom: 8px;" />'
     
     email_html = f"""
     <div style="font-family: sans-serif; padding: 20px; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e9ecef; border-radius: 12px;">
