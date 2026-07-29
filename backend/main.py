@@ -1584,7 +1584,8 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
             f"[ADMIN]: {request.message}",
             "N/A",
             username=admin_profile.get("name", "Support Agent"),
-            avatar_url=admin_profile.get("avatar_url", "")
+            avatar_url=admin_profile.get("avatar_url", ""),
+            agent_email=email
         )
 
         # Format role to clean title for dashboard sync too
@@ -1608,7 +1609,8 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
             "timestamp": datetime.utcnow().isoformat(),
             "sender_name": admin_profile.get("name", "Support Agent"),
             "sender_title": sender_title,
-            "sender_avatar": admin_profile.get("avatar_url", "")
+            "sender_avatar": admin_profile.get("avatar_url", ""),
+            "agent_email": email
         })
 
         return {"status": "success"}

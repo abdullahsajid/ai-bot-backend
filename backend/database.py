@@ -41,7 +41,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 async def get_db():
     return db
 
-async def save_chat_history(platform, user_id, message, response, username=None, avatar_url=None):
+async def save_chat_history(platform, user_id, message, response, username=None, avatar_url=None, agent_email=None):
     history_collection = db["chat_history"]
     chat_entry = {
         "platform": platform,
@@ -52,6 +52,7 @@ async def save_chat_history(platform, user_id, message, response, username=None,
     }
     if username: chat_entry["username"] = username
     if avatar_url: chat_entry["avatar_url"] = avatar_url
+    if agent_email: chat_entry["agent_email"] = agent_email
     await history_collection.insert_one(chat_entry)
 
 async def get_user_context(platform, user_id, limit=5):
