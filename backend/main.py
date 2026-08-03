@@ -1995,7 +1995,10 @@ async def send_customer_email(to_email: str, subject: str, html_content: str):
 
 @app.post("/api/tickets/create")
 async def api_create_ticket(request: TicketCreateRequest):
-    from .database import create_ticket
+    from .database import create_ticket, is_customer_banned
+    if await is_customer_banned(email=request.customer_email):
+        raise HTTPException(status_code=403, detail="Banned from submitting new tickets.")
+        
     ticket = await create_ticket(
         request.customer_name,
         request.customer_email,
@@ -2027,8 +2030,12 @@ async def api_create_ticket(request: TicketCreateRequest):
 
 @app.post("/api/tickets/incoming")
 async def api_incoming_email(request: IncomingEmailRequest):
-    from .database import create_ticket, get_ticket, add_ticket_reply, update_ticket_status
+    from .database import create_ticket, get_ticket, add_ticket_reply, update_ticket_status, is_customer_banned
     
+    if await is_customer_banned(email=request.sender_email):
+        logger.warning(f"Ignored incoming email ticket from banned email: {request.sender_email}")
+        return {"status": "ignored", "reason": "banned"}
+        
     match = re.search(r"LUMO-\d{6,8}", request.subject)
     if match:
         ticket_ref = match.group(0)
@@ -2204,10 +2211,25 @@ async def api_reply_ticket(ticket_ref: str, request: TicketReplyRequest, email: 
 
 @app.patch("/api/tickets/{ticket_ref}/status", dependencies=[Depends(get_current_user)])
 async def api_patch_ticket_status(ticket_ref: str, request: TicketStatusRequest, email: str = Depends(get_current_user)):
-    from .database import update_ticket_status
-    if request.status not in ("open", "escalated", "resolved", "spam"):
+    from .database import update_ticket_status, get_ticket, ban_customer, unban_customer
+    if request.status not in ("open", "escalated", "resolved", "spam", "banned"):
         raise HTTPException(status_code=400, detail="Invalid status")
+        
+    ticket = await get_ticket(ticket_ref)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+        
+    prev_status = ticket.get("status")
+    customer_email = ticket.get("customer_email")
+    
+    # Update status
     await update_ticket_status(ticket_ref, request.status)
+    
+    # Manage ban state based on status transition
+    if request.status == "banned" and customer_email:
+        await ban_customer(ip_address=None, email=customer_email, reason=f"Banned via ticket {ticket_ref}")
+    elif prev_status == "banned" and request.status != "banned" and customer_email:
+        await unban_customer(email=customer_email)
     
     await manager.broadcast({
         "type": "ticket_update",
