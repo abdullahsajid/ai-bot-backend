@@ -214,8 +214,101 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+async def telegram_lumo_security_notice_loop(bot):
+    print("🚀 [TELEGRAM] Starting Lumo Wallet security notice background loop...")
+    await asyncio.sleep(10) # offset initial start slightly
+    
+    settings = db["system_settings"]
+    
+    security_text = (
+        "🔒 *Important Security Notice from Lumo Wallet*\n\n"
+        "Dear Lumo Wallet community,\n\n"
+        "We want to make our position clear regarding recent misinformation circulating online involving unauthorized use of the Lumo Wallet name and branding.\n\n"
+        "Lumo Wallet *does not have an official token* and we have not created, launched, or endorsed any cryptocurrency token. Any token or project claiming to be affiliated with Lumo Wallet is not authorized by us.\n\n"
+        "To help protect our users and provide greater transparency, we have added a *security notice on our official website*. This notice links to a detailed post explaining:\n\n"
+        "✅ *The services Lumo Wallet does provide*\n"
+        "• On/off-ramp solutions\n"
+        "• Swap services\n"
+        "• Card services\n"
+        "• Staking services\n"
+        "• Secure wallet infrastructure\n\n"
+        "❌ *The services Lumo Wallet does not provide*\n"
+        "• Token creation or issuance\n"
+        "• Third-party token endorsements\n"
+        "• Investment schemes or guaranteed returns\n"
+        "• Requests for private keys or recovery phrases\n\n"
+        "We encourage everyone to always verify information through our official channels and remain cautious when interacting with any crypto-related project.\n\n"
+        "Before using any digital asset service or investing in any token, always do your own research, verify sources, and understand the risks involved.\n\n"
+        "Your security and trust remain our priority.\n\n"
+        "Stay safe,\n"
+        "*The Lumo Wallet Team*"
+    )
+    
+    image_path = os.path.join(os.path.dirname(__file__), "assets", "security-notice.png")
+    
+    while True:
+        try:
+            now = datetime.utcnow()
+            
+            # 1. Opposite Time Rule (Check last time PulseAI alert was sent)
+            pulse_doc = await settings.find_one({"key": "last_security_announcement_telegram"})
+            pulse_sent = pulse_doc.get("timestamp") if pulse_doc else None
+            
+            should_send = False
+            if pulse_sent and (now - pulse_sent).total_seconds() >= 43200:
+                # 2. Check last Lumo alert timestamp
+                doc = await settings.find_one({"key": "last_lumo_security_notice_telegram"})
+                if not doc:
+                    should_send = True
+                else:
+                    last_sent = doc.get("timestamp")
+                    if not last_sent or (now - last_sent).total_seconds() >= 86400:
+                        should_send = True
+            
+            if should_send:
+                # Fetch target groups from env
+                groups_str = os.getenv("TELEGRAM_SECURITY_GROUPS") or os.getenv("ALLOWED_TELEGRAM_GROUPS")
+                if groups_str:
+                    group_ids = [g.strip() for g in groups_str.split(",") if g.strip()]
+                    sent_any = False
+                    for gid in group_ids:
+                        try:
+                            if os.path.exists(image_path):
+                                with open(image_path, "rb") as photo_file:
+                                    await bot.send_photo(
+                                        chat_id=gid,
+                                        photo=photo_file,
+                                        caption=security_text,
+                                        parse_mode="Markdown"
+                                    )
+                            else:
+                                await bot.send_message(
+                                    chat_id=gid,
+                                    text=security_text,
+                                    parse_mode="Markdown"
+                                )
+                            print(f"✅ [TELEGRAM] Sent Lumo Wallet security announcement to group {gid}")
+                            sent_any = True
+                        except Exception as e:
+                            print(f"❌ [TELEGRAM] Failed to send Lumo notice to group {gid}: {e}")
+                            
+                    if sent_any:
+                        await settings.update_one(
+                            {"key": "last_lumo_security_notice_telegram"},
+                            {"$set": {"timestamp": now}},
+                            upsert=True
+                        )
+                else:
+                    print("⚠️ [TELEGRAM] No groups configured for Lumo security notice.")
+        except Exception as e:
+            print(f"❌ [TELEGRAM] Error in Lumo security announcement loop: {e}")
+            
+        # Check every 10 minutes
+        await asyncio.sleep(600)
+
 async def post_init(application):
     asyncio.create_task(telegram_security_announcement_loop(application.bot))
+    asyncio.create_task(telegram_lumo_security_notice_loop(application.bot))
 
 def run_telegram():
     token = os.getenv("TELEGRAM_TOKEN")
