@@ -275,12 +275,19 @@ async def telegram_lumo_security_notice_loop(bot):
                         try:
                             if os.path.exists(image_path):
                                 with open(image_path, "rb") as photo_file:
+                                    # Send photo first with a short caption to avoid 1024-char caption limit
                                     await bot.send_photo(
                                         chat_id=gid,
                                         photo=photo_file,
-                                        caption=security_text,
+                                        caption="🔒 *Important Security Notice from Lumo Wallet*",
                                         parse_mode="Markdown"
                                     )
+                                # Send the detailed text right after as a separate message
+                                await bot.send_message(
+                                    chat_id=gid,
+                                    text=security_text,
+                                    parse_mode="Markdown"
+                                )
                             else:
                                 await bot.send_message(
                                     chat_id=gid,
