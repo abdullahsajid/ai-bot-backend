@@ -3,6 +3,7 @@ import uvicorn
 from datetime import datetime, timedelta
 import asyncio
 import re
+import json
 import pytz
 from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Form, File, UploadFile, Request, Header, Response
 from fastapi.staticfiles import StaticFiles
@@ -1935,6 +1936,89 @@ async def onboarding_endpoint(request: OnboardingRequest, _ = Depends(verify_mob
 
     response = await ai_engine.generate_response("mobile", request.user_id, full_prompt)
     return {"step": request.step, "guidance": response}
+
+def _parse_ai_json(text: str, fallback: dict) -> dict:
+    """Extracts the first JSON object from an AI text response, falling back safely."""
+    try:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return fallback
+
+class NudgeRequest(BaseModel):
+    user_id: str
+    platform: Optional[str] = "mobile"
+    has_card: Optional[bool] = None
+    card_status: Optional[str] = None  # e.g. "not_ordered", "active", "frozen"
+    days_since_topup: Optional[int] = None
+    balance: Optional[float] = None
+    has_bought_crypto: Optional[bool] = None
+    has_swapped_crypto: Optional[bool] = None
+    inactivity_days: Optional[int] = None
+    referral_count: Optional[int] = None
+
+@app.post("/mobile/nudges")
+async def nudges_endpoint(request: NudgeRequest, _ = Depends(verify_mobile_secret)):
+    """
+    Evaluates user activity flags sent by the Flutter app and returns
+    personalized popup/nudge suggestions: card top-up, card ordering,
+    buying/swapping crypto, referrals, and re-engagement.
+    """
+    flags = request.dict(exclude={"user_id", "platform"})
+    flags = {k: v for k, v in flags.items() if v is not None}
+
+    if not flags:
+        return {"nudges": []}
+
+    prompt = f"""
+Generate in-app popup nudges for a Lumo Wallet user based on these activity flags:
+{json.dumps(flags)}
+
+Guidance on when each nudge type applies (skip any nudge whose flags are not present):
+- has_card is false or card_status is "not_ordered" -> suggest ordering a card.
+- days_since_topup >= 7 -> suggest topping up their card.
+- has_bought_crypto is false -> suggest buying crypto.
+- has_swapped_crypto is false and balance is greater than 0 -> suggest trying a crypto swap.
+- inactivity_days >= 7 -> a general re-engagement nudge.
+- referral_count == 0 -> suggest sharing their referral link/code.
+
+Return at most 3 nudges, ordered by priority (most important first). Only include nudges that are actually justified by the flags given.
+
+Respond with ONLY valid JSON, no other text, in this exact shape:
+{{"nudges": [{{"id": "short_snake_case_id", "title": "...", "message": "...", "action_label": "...", "action": "short_snake_case_action"}}]}}
+"""
+
+    raw = await ai_engine.generate_structured(prompt)
+    return _parse_ai_json(raw, fallback={"nudges": []})
+
+class BusinessAnalyticsRequest(BaseModel):
+    business_id: str
+    period: Optional[str] = "last_7_days"
+    sales_data: dict
+
+@app.post("/business/analytics")
+async def business_analytics_endpoint(request: BusinessAnalyticsRequest, _ = Depends(verify_mobile_secret)):
+    """
+    Lumo Business merchant endpoint. Accepts sales/transaction data from the
+    merchant app and returns an AI-generated summary and growth insights.
+    """
+    prompt = f"""
+A Lumo Business merchant has sent their sales data for the period "{request.period}":
+{json.dumps(request.sales_data)}
+
+Analyze this data and respond with ONLY valid JSON, no other text, in this exact shape:
+{{
+  "summary": "1-2 sentence plain-language summary of performance",
+  "insights": ["short insight 1", "short insight 2"],
+  "growth_recommendation": "one concrete, actionable suggestion to grow the business"
+}}
+"""
+
+    raw = await ai_engine.generate_structured(prompt)
+    fallback = {"summary": raw, "insights": [], "growth_recommendation": ""}
+    return _parse_ai_json(raw, fallback=fallback)
 
 # --- Support Ticketing & Geolocation & Operating Hours APIs ---
 

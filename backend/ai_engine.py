@@ -300,12 +300,57 @@ Politely decline and redirect to Lumo Wallet topics when a request is instead:
                 for entry in context:
                     full_prompt += f"User: {entry['message']}\nAI: {entry['response']}\n"
             full_prompt += f"User: {user_message}"
-            
+
             response = model.generate_content(full_prompt)
             return response.text
         except Exception as e:
             logging.error(f"Gemini generation failed: {e}")
             return "Something went wrong on my end. Please try again, or type 'human' to reach a support agent."
+
+    async def generate_structured(self, task_prompt: str) -> str:
+        """
+        Non-chat generation for internal/structured tasks (nudge evaluation,
+        business analytics) that should return ONLY JSON. Deliberately skips the
+        customer-support chat persona, FAQs, and knowledge base injection used by
+        generate_response, since those are irrelevant here and risk steering the
+        model away from a clean JSON reply.
+        """
+        instructions = (
+            "You are an internal data-processing service for the Lumo Wallet backend. "
+            "You do not chat with end users and you have no persona. You only transform "
+            "the structured input you are given into the exact JSON format requested. "
+            "Reply with ONLY the JSON object, no prose, no markdown code fences."
+        )
+        if self.preferred_provider == "openai" and openai_client:
+            try:
+                response = await openai_client.responses.create(
+                    model=self.openai_model or "gpt-5.4",
+                    input=task_prompt,
+                    instructions=instructions
+                )
+                for item in response.output:
+                    if item.type == "message":
+                        for content_item in item.content:
+                            if content_item.type == "output_text":
+                                return content_item.text
+                return "{}"
+            except Exception as e:
+                logging.error(f"Structured generation (OpenAI) failed: {e}")
+                if gemini_key:
+                    return await self._generate_structured_gemini(task_prompt, instructions)
+                return "{}"
+        return await self._generate_structured_gemini(task_prompt, instructions)
+
+    async def _generate_structured_gemini(self, task_prompt, instructions):
+        if not gemini_key:
+            return "{}"
+        try:
+            model = genai.GenerativeModel(self.gemini_model)
+            response = model.generate_content(f"{instructions}\n\n{task_prompt}")
+            return response.text
+        except Exception as e:
+            logging.error(f"Structured generation (Gemini) failed: {e}")
+            return "{}"
 
 # Singleton
 ai_engine = AIEngine()
