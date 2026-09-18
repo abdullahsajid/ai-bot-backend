@@ -2020,6 +2020,46 @@ Analyze this data and respond with ONLY valid JSON, no other text, in this exact
     fallback = {"summary": raw, "insights": [], "growth_recommendation": ""}
     return _parse_ai_json(raw, fallback=fallback)
 
+class FeatureTourRequest(BaseModel):
+    user_id: str
+    platform: Optional[str] = "mobile"
+    account_type: Optional[str] = None  # "personal" or "business"
+    interests: Optional[List[str]] = None  # e.g. ["card", "crypto", "business"]
+
+@app.post("/mobile/feature-tour")
+async def feature_tour_endpoint(request: FeatureTourRequest, _ = Depends(verify_mobile_secret)):
+    """
+    Signup-time endpoint. Returns a short, ordered set of feature-highlight
+    cards for the app to show as an intro/demo carousel to a new user.
+    If account_type/interests are given, the tour is prioritized around
+    them; otherwise a general tour of all Lumo features is returned.
+    """
+    focus = ""
+    if request.account_type:
+        focus += f'The user is signing up for a "{request.account_type}" account. '
+    if request.interests:
+        focus += f"They indicated interest in: {', '.join(request.interests)}. "
+    if not focus:
+        focus = "No specific preferences were given, so cover the app broadly."
+
+    prompt = f"""
+A brand new Lumo Wallet user has just signed up and needs a short feature-tour/demo
+shown in the app. {focus}
+
+Available Lumo features to potentially highlight: the crypto wallet, ordering a
+physical/virtual card, topping up the card, buying crypto, swapping crypto,
+the referral program, and (only if the account is a business account) Lumo
+Business sales analytics.
+
+Pick the most relevant 4 to 6 features for this user and respond with ONLY
+valid JSON, no other text, in this exact shape:
+{{"tour": [{{"id": "short_snake_case_id", "title": "...", "description": "one short sentence", "action": "short_snake_case_action"}}]}}
+Order the cards the way they should be shown, most important first.
+"""
+
+    raw = await ai_engine.generate_structured(prompt)
+    return _parse_ai_json(raw, fallback={"tour": []})
+
 # --- Support Ticketing & Geolocation & Operating Hours APIs ---
 
 async def send_customer_email(to_email: str, subject: str, html_content: str):
