@@ -565,7 +565,7 @@ async def delete_macro(macro_id: str):
 
 # --- Support Ticketing & Operating Hours & Bans ---
 
-async def create_ticket(customer_name: str, customer_email: str, subject: str, description: str, category: str):
+async def create_ticket(customer_name: str, customer_email: str, subject: str, description: str, category: str, attachments: list = None):
     import random
     import string
     
@@ -596,6 +596,7 @@ async def create_ticket(customer_name: str, customer_email: str, subject: str, d
                 "sender_type": "customer",
                 "sender_name": customer_name,
                 "message": description,
+                "attachments": attachments or [],
                 "timestamp": datetime.utcnow()
             }
         ]
@@ -622,11 +623,12 @@ async def get_ticket(ticket_ref: str):
         ticket["_id"] = str(ticket["_id"])
     return ticket
 
-async def add_ticket_reply(ticket_ref: str, sender_type: str, sender_name: str, message: str, sender_title: str = None, sender_avatar: str = None):
+async def add_ticket_reply(ticket_ref: str, sender_type: str, sender_name: str, message: str, sender_title: str = None, sender_avatar: str = None, attachments: list = None):
     reply = {
         "sender_type": sender_type,
         "sender_name": sender_name,
         "message": message,
+        "attachments": attachments or [],
         "timestamp": datetime.utcnow()
     }
     if sender_title:

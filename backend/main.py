@@ -313,6 +313,7 @@ class TicketCreateRequest(BaseModel):
     subject: str
     description: str
     category: str
+    attachments: Optional[List[str]] = None
 
 class IncomingEmailRequest(BaseModel):
     sender_name: str
@@ -322,6 +323,7 @@ class IncomingEmailRequest(BaseModel):
 
 class TicketReplyRequest(BaseModel):
     message: str
+    attachments: Optional[List[str]] = None
 
 class TicketStatusRequest(BaseModel):
     status: str
@@ -2128,7 +2130,8 @@ async def api_create_ticket(request: TicketCreateRequest):
         request.customer_email,
         request.subject,
         request.description,
-        request.category
+        request.category,
+        request.attachments
     )
     
     confirm_html = f"""
@@ -2278,7 +2281,8 @@ async def api_reply_ticket(ticket_ref: str, request: TicketReplyRequest, email: 
         sender_name=agent_name,
         message=request.message,
         sender_title=agent_role,
-        sender_avatar=agent_avatar
+        sender_avatar=agent_avatar,
+        attachments=request.attachments
     )
     
     if not success:
@@ -2549,25 +2553,44 @@ async def api_get_bans():
     return await get_banned_customers()
 
 import uuid
-import shutil
+
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif"}
 
 @app.post("/api/upload-attachment")
 async def api_upload_attachment(file: UploadFile = File(...)):
     # Validate file type
-    if not file.content_type.startswith("image/"):
+    if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are allowed.")
-    
-    # Generate unique filename
-    ext = file.filename.split('.')[-1]
+
+    # Derive the extension from a fixed whitelist only — never trust the raw
+    # filename directly, since a spoofed content_type plus a crafted filename
+    # (e.g. containing "/" or "..") could otherwise be used to write outside
+    # the uploads folder.
+    raw_name = file.filename or ""
+    raw_ext = raw_name.rsplit(".", 1)[-1].lower() if "." in raw_name else ""
+    ext = raw_ext if raw_ext in ALLOWED_IMAGE_EXTENSIONS else "jpg"
+
     new_filename = f"{uuid.uuid4().hex}_{int(datetime.utcnow().timestamp())}.{ext}"
     file_path = os.path.join("uploads", new_filename)
-    
+
+    size = 0
     try:
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB.")
+                buffer.write(chunk)
+    except HTTPException:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise
     except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
-        
+
     public_url = f"https://api.lumopulse.us/uploads/{new_filename}"
     return {"status": "success", "url": public_url}
 
