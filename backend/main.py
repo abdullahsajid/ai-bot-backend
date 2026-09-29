@@ -349,6 +349,9 @@ class OperatingHoursRequest(BaseModel):
 class MobileChatRequest(BaseModel):
     user_id: str
     message: str
+    # Guidance for the assistant only (app map, reply language). Never shown to
+    # agents or saved in the chat history: the message field stays the customer's words.
+    context: Optional[str] = None
     screen_context: Optional[str] = "main_wallet"
     platform: Optional[str] = "mobile"
     customer_name: Optional[str] = None
@@ -1873,7 +1876,7 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
     mobile_prompt = f"You are Pulse AI inside Lumo Wallet. Current User Screen: {request.screen_context}. Help the user manage their assets securely."
     
     response = await ai_engine.generate_response(
-        platform, user_id, user_message, 
+        platform, user_id, (f"{request.context}\n{user_message}" if request.context else user_message), 
         context=history_context, faqs=faqs, knowledge=knowledge
     )
     
