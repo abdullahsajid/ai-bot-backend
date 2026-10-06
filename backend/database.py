@@ -41,7 +41,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 async def get_db():
     return db
 
-async def save_chat_history(platform, user_id, message, response, username=None, avatar_url=None, agent_email=None):
+async def save_chat_history(platform, user_id, message, response, username=None, avatar_url=None, agent_email=None, message_en=None, detected_language=None, message_translated=None):
     history_collection = db["chat_history"]
     chat_entry = {
         "platform": platform,
@@ -53,7 +53,32 @@ async def save_chat_history(platform, user_id, message, response, username=None,
     if username: chat_entry["username"] = username
     if avatar_url: chat_entry["avatar_url"] = avatar_url
     if agent_email: chat_entry["agent_email"] = agent_email
+    # Only store the translation when it actually differs from the original,
+    # so English-speaking customers don't carry a redundant duplicate field.
+    # message_en: a non-English customer message, translated to English (for agents).
+    if message_en and message_en != message: chat_entry["message_en"] = message_en
+    if detected_language: chat_entry["detected_language"] = detected_language
+    # message_translated: an English agent reply, translated into the customer's
+    # language (so reloading chat history still shows it translated to them).
+    if message_translated and message_translated != message: chat_entry["message_translated"] = message_translated
     await history_collection.insert_one(chat_entry)
+
+async def set_customer_language(platform, user_id, language_name):
+    """Remembers the customer's last-detected chat language so agent replies
+    can be translated back into it in /send-manual."""
+    if not language_name:
+        return
+    await users_collection.update_one(
+        {"platform": platform, "user_id": str(user_id)},
+        {"$set": {"detected_language": language_name}},
+        upsert=True
+    )
+
+async def get_customer_language(platform, user_id):
+    user = await users_collection.find_one({"platform": platform, "user_id": str(user_id)})
+    if user:
+        return user.get("detected_language") or "English"
+    return "English"
 
 async def get_user_context(platform, user_id, limit=5):
     cursor = history_collection.find({"platform": platform, "user_id": str(user_id)}).sort("timestamp", -1).limit(limit)

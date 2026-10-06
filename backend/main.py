@@ -34,7 +34,8 @@ from .database import (
     get_user_thread, save_user_thread, add_notification, get_notifications, clear_notifications,
     is_account_locked, track_failed_login, reset_failed_login, get_all_staff, delete_admin, update_admin,
     update_conversation_status, update_conversation_owner, set_conversation_wait, set_customer_name, update_admin_status,
-    suggest_kb_articles, get_all_macros, add_macro, delete_macro
+    suggest_kb_articles, get_all_macros, add_macro, delete_macro,
+    set_customer_language, get_customer_language
 )
 from .bots.whatsapp import whatsapp_bot
 
@@ -480,6 +481,16 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
     user_message = request.message
     platform = request.platform or "app"
 
+    # Translate the incoming message to English for CSR agents on the admin
+    # panel, and remember the customer's language so replies can be sent
+    # back translated from /send-manual.
+    translation = await translate_to_english(user_message)
+    detected_language = translation.get("language_name") or "English"
+    user_message_en = translation.get("translated") or user_message
+    if user_message_en == user_message:
+        user_message_en = None
+    await set_customer_language(platform, user_id, detected_language)
+
     # Reset is_unread status on incoming message
     from .database import db
     await db["users"].update_one(
@@ -545,12 +556,13 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
             "is_human": True,
             "timestamp": datetime.utcnow().isoformat()
         })
-        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]", message_en=user_message_en, detected_language=detected_language)
         await manager.broadcast({
             "type": "new_message",
             "platform": platform,
             "user_id": user_id,
             "message": user_message,
+            "message_en": user_message_en,
             "response": "[HUMAN_TAKOVER_ACTIVE]",
             "timestamp": datetime.utcnow().isoformat()
         })
@@ -558,12 +570,13 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
 
     is_human = await get_human_takeover_status(user_id)
     if is_human:
-        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]", message_en=user_message_en, detected_language=detected_language)
         await manager.broadcast({
             "type": "new_message",
             "platform": platform,
             "user_id": user_id,
             "message": user_message,
+            "message_en": user_message_en,
             "response": "[HUMAN_TAKOVER_ACTIVE]",
             "timestamp": datetime.utcnow().isoformat()
         })
@@ -588,12 +601,13 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
             "timestamp": datetime.utcnow().isoformat()
         })
         resp_msg = "Thanks for the screenshot! I've notified our live support team to take a look and assist you. Please hold on."
-        await save_chat_history(platform, user_id, user_message, resp_msg)
+        await save_chat_history(platform, user_id, user_message, resp_msg, message_en=user_message_en, detected_language=detected_language)
         await manager.broadcast({
             "type": "new_message",
             "platform": platform,
             "user_id": user_id,
             "message": user_message,
+            "message_en": user_message_en,
             "response": resp_msg,
             "timestamp": datetime.utcnow().isoformat()
         })
@@ -602,20 +616,21 @@ async def app_chat_webhook(request: AppChatRequest, x_app_secret: str = Header(N
     context = await get_user_context(platform, user_id)
     faqs = await get_faqs()
     knowledge = await get_all_knowledge()
-    
+
     # Check if AI is active
     from .database import is_platform_active
     if not await is_platform_active(platform):
         return {"response": "[AI_DISABLED_BY_ADMIN]", "status": "disabled"}
-    
+
     response = await ai_engine.generate_response(platform, user_id, user_message, context, faqs=faqs, knowledge=knowledge)
 
-    await save_chat_history(platform, user_id, user_message, response)
+    await save_chat_history(platform, user_id, user_message, response, message_en=user_message_en, detected_language=detected_language)
     await manager.broadcast({
         "type": "new_message",
         "platform": platform,
         "user_id": user_id,
         "message": user_message,
+        "message_en": user_message_en,
         "response": response,
         "timestamp": datetime.utcnow().isoformat()
     })
@@ -1485,7 +1500,16 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
     await set_human_takeover_status(request.user_id, True, request.platform)
     admin_profile = await get_admin_profile(email)
     admin_name = admin_profile.get("name", "Staff Member")
-    
+
+    # Translate the agent's English reply into the customer's last-detected
+    # chat language before it reaches them. The admin dashboard keeps showing
+    # the agent's original English text (handled separately below) — only
+    # the copy actually delivered to the customer's app is translated.
+    translated_message = request.message
+    if request.platform in ('app', 'website', 'mobile') and not request.message.startswith("[NOTE]:"):
+        customer_language = await get_customer_language(request.platform, request.user_id)
+        translated_message = await translate_from_english(request.message, customer_language)
+
     await update_conversation_status(request.platform, request.user_id, "in_progress")
     await update_conversation_owner(request.platform, request.user_id, email, admin_name)
     await set_conversation_wait(request.platform, request.user_id, None)
@@ -1555,7 +1579,7 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
                 if res.status_code != 200:
                     raise HTTPException(status_code=res.status_code, detail=f"Discord API Error: {res.text}")
 
-        elif request.platform in ('app', 'website'):
+        elif request.platform in ('app', 'website', 'mobile'):
             # Format role to clean title
             raw_role = admin_profile.get("role", "Support Agent")
             if raw_role == "ADMIN":
@@ -1568,12 +1592,14 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
                 sender_title = raw_role.replace("_", " ").title()
 
             # For mobile app / website users, deliver via WebSocket broadcast
-            # The client must listen to the WebSocket and render this as a staff message
+            # The client must listen to the WebSocket and render this as a staff message.
+            # Not consumed by the admin dashboard (chat.php only handles "new_message"),
+            # so it's safe to send the translated text here directly.
             await manager.broadcast({
                 "type": "staff_reply",
                 "platform": request.platform,
                 "user_id": request.user_id,
-                "message": request.message,
+                "message": translated_message,
                 "sender_name": admin_profile.get("name", "Live Agent"),
                 "sender_title": sender_title,
                 "sender_avatar": admin_profile.get("avatar_url", ""),
@@ -1588,7 +1614,8 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
             "N/A",
             username=admin_profile.get("name", "Support Agent"),
             avatar_url=admin_profile.get("avatar_url", ""),
-            agent_email=email
+            agent_email=email,
+            message_translated=f"[ADMIN]: {translated_message}" if request.platform in ('app', 'website', 'mobile') else None
         )
 
         # Format role to clean title for dashboard sync too
@@ -1603,18 +1630,30 @@ async def send_manual(request: ManualResponseRequest, email: str = Depends(get_c
             sender_title = raw_role.replace("_", " ").title()
 
         # 3. Update Dashboard Live Chat
-        await manager.broadcast({
+        new_message_payload = {
             "type": "new_message",
             "platform": request.platform,
             "user_id": request.user_id,
-            "message": f"[ADMIN]: {request.message}",
             "response": "N/A",
             "timestamp": datetime.utcnow().isoformat(),
             "sender_name": admin_profile.get("name", "Support Agent"),
             "sender_title": sender_title,
             "sender_avatar": admin_profile.get("avatar_url", ""),
             "agent_email": email
-        })
+        }
+        if request.platform in ('app', 'website', 'mobile'):
+            # manager.broadcast() would send one identical payload to both the
+            # admin dashboard and the customer's app — split it here so the
+            # dashboard keeps showing the agent's original English text while
+            # the customer receives it translated into their own language.
+            for connection in list(manager.active_connections):
+                try:
+                    await connection.send_json({**new_message_payload, "message": f"[ADMIN]: {request.message}"})
+                except Exception:
+                    pass
+            await manager.send_to_mobile(request.user_id, {**new_message_payload, "message": f"[ADMIN]: {translated_message}"})
+        else:
+            await manager.broadcast({**new_message_payload, "message": f"[ADMIN]: {request.message}"})
 
         return {"status": "success"}
 
@@ -1691,6 +1730,12 @@ async def mobile_messages_endpoint(user_id: str, platform: str = "app", _ = Depe
                 
             if is_agent:
                 sender = "agent"
+                # If this reply was translated into the customer's language at
+                # send time, show that translated version here too, so it's
+                # still correct after the app reloads the chat history.
+                translated = msg.get("message_translated")
+                if translated:
+                    text = re.sub(r'^\[(ADMIN|STAFF)\]:\s*', '', translated)
                 # Resolve avatar and role/title
                 admin_doc = admin_map.get(sender_name)
                 if admin_doc:
@@ -1752,6 +1797,16 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
     user_id = request.user_id
     user_message = request.message
     platform = request.platform or "mobile"
+
+    # Translate the incoming message to English for CSR agents on the admin
+    # panel, and remember the customer's language so replies can be sent
+    # back translated from /send-manual.
+    translation = await translate_to_english(user_message)
+    detected_language = translation.get("language_name") or "English"
+    user_message_en = translation.get("translated") or user_message
+    if user_message_en == user_message:
+        user_message_en = None
+    await set_customer_language(platform, user_id, detected_language)
 
     # Reset is_unread status on incoming message
     from .database import db
@@ -1818,17 +1873,18 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
             "is_human": True,
             "timestamp": datetime.utcnow().isoformat()
         })
-        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]", message_en=user_message_en, detected_language=detected_language)
         await manager.broadcast({
             "type": "new_message",
             "platform": platform,
             "user_id": user_id,
             "message": user_message,
+            "message_en": user_message_en,
             "response": "[HUMAN_TAKOVER_ACTIVE]",
             "timestamp": datetime.utcnow().isoformat()
         })
         return {
-            "response": "A human agent will be with you shortly.", 
+            "response": "A human agent will be with you shortly.",
             "status": "human_handling",
             "bot_name": "Lumo AI",
             "bot_title": "AI Assistant",
@@ -1837,17 +1893,18 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
 
     is_human = await get_human_takeover_status(user_id)
     if is_human:
-        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]")
+        await save_chat_history(platform, user_id, user_message, "[HUMAN_TAKOVER_ACTIVE]", message_en=user_message_en, detected_language=detected_language)
         await manager.broadcast({
             "type": "new_message",
             "platform": platform,
             "user_id": user_id,
             "message": user_message,
+            "message_en": user_message_en,
             "response": "[HUMAN_TAKOVER_ACTIVE]",
             "timestamp": datetime.utcnow().isoformat()
         })
         return {
-            "response": "A human agent will be with you shortly.", 
+            "response": "A human agent will be with you shortly.",
             "status": "human_handling",
             "bot_name": "Lumo AI",
             "bot_title": "AI Assistant",
@@ -1877,13 +1934,14 @@ async def mobile_chat_endpoint(request: MobileChatRequest, _ = Depends(verify_mo
         context=history_context, faqs=faqs, knowledge=knowledge
     )
     
-    await save_chat_history(platform, user_id, user_message, response)
-    
+    await save_chat_history(platform, user_id, user_message, response, message_en=user_message_en, detected_language=detected_language)
+
     await manager.broadcast({
         "type": "new_message",
         "platform": platform,
         "user_id": user_id,
         "message": user_message,
+        "message_en": user_message_en,
         "response": response,
         "timestamp": datetime.utcnow().isoformat()
     })
@@ -1948,6 +2006,57 @@ def _parse_ai_json(text: str, fallback: dict) -> dict:
     except (json.JSONDecodeError, TypeError):
         pass
     return fallback
+
+async def translate_to_english(text: str) -> dict:
+    """
+    Detects the language of an incoming live-chat message and translates it
+    to English, so CSR agents on the admin panel don't have to translate it
+    themselves. Returns {"language_name": ..., "translated": ...}. Skips the
+    AI call for empty text or internal bracket-tagged placeholders (e.g.
+    "[Attachment: ...]"), and falls back to treating the message as already
+    English on any failure so a translation hiccup never blocks live chat.
+    """
+    fallback = {"language_name": "English", "translated": text}
+    if not text or not text.strip() or text.strip().startswith("["):
+        return fallback
+
+    prompt = f"""
+Detect the language of this customer support chat message and translate it to English.
+Message: {json.dumps(text)}
+
+Respond with ONLY valid JSON, no other text, in this exact shape:
+{{"language_name": "English name of the detected language, e.g. Spanish, Urdu, English", "translated": "the English translation; if the message is already in English, return it unchanged"}}
+"""
+    raw = await ai_engine.generate_structured(prompt)
+    result = _parse_ai_json(raw, fallback=fallback)
+    if not result.get("translated"):
+        result["translated"] = text
+    if not result.get("language_name"):
+        result["language_name"] = "English"
+    return result
+
+async def translate_from_english(text: str, target_language_name: str) -> str:
+    """
+    Translates an agent's English reply into the customer's last-detected
+    chat language before it is delivered to them. Returns the text unchanged
+    if the target language is English, unknown, or empty, or on any failure.
+    """
+    if not text or not target_language_name:
+        return text
+    if target_language_name.strip().lower() == "english":
+        return text
+
+    prompt = f"""
+Translate this customer support reply from English into {target_language_name}.
+Keep the tone natural and professional, and keep any wallet addresses, amounts, or links unchanged.
+Message: {json.dumps(text)}
+
+Respond with ONLY valid JSON, no other text, in this exact shape:
+{{"translated": "the translated message"}}
+"""
+    raw = await ai_engine.generate_structured(prompt)
+    parsed = _parse_ai_json(raw, fallback={"translated": text})
+    return parsed.get("translated") or text
 
 class NudgeRequest(BaseModel):
     user_id: str
