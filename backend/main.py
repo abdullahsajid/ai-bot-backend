@@ -30,7 +30,7 @@ from .database import (
     update_admin_profile, get_integration_status, update_integration_status, 
     get_admin_user, update_admin_password, verify_password, 
     create_initial_admin, create_admin, get_admin_preferences, 
-    update_admin_preferences, save_otp, verify_otp, add_knowledge, get_all_knowledge,
+    update_admin_preferences, set_totp_pending_secret, enable_totp, reset_totp, add_knowledge, get_all_knowledge,
     get_user_thread, save_user_thread, add_notification, get_notifications, clear_notifications,
     is_account_locked, track_failed_login, reset_failed_login, get_all_staff, delete_admin, update_admin,
     update_conversation_status, update_conversation_owner, set_conversation_wait, set_customer_name, update_admin_status,
@@ -38,6 +38,7 @@ from .database import (
     set_customer_language, get_customer_language
 )
 from .bots.whatsapp import whatsapp_bot
+from . import totp
 
 import logging
 
@@ -373,16 +374,21 @@ class ManualResponseRequest(BaseModel):
 
 class PasswordUpdateRequest(BaseModel):
     new_password: str
-    otp: str
+    otp: str  # 6-digit code from the user's authenticator app
+
+class TotpSetupRequest(BaseModel):
+    pre_auth_token: str
+
+class ResetTotpRequest(BaseModel):
+    email: str
 
 class PreferencesRequest(BaseModel):
     notifications: bool
     auditLog: bool
 
 class Verify2FARequest(BaseModel):
-    email: str
+    pre_auth_token: str
     otp: str
-    recaptcha_token: Optional[str] = None
 
 # Auth Utilities
 def create_access_token(data: dict):
@@ -390,6 +396,23 @@ def create_access_token(data: dict):
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+PRE_AUTH_EXPIRE_MINUTES = 10
+
+def create_pre_auth_token(email: str):
+    """Short-lived proof that the password step passed. Deliberately has no "sub" claim,
+    so get_current_user rejects it and it can't be used as an access token."""
+    expire = datetime.utcnow() + timedelta(minutes=PRE_AUTH_EXPIRE_MINUTES)
+    return jwt.encode({"pre_auth": email, "scope": "2fa", "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+
+def decode_pre_auth_token(token: str) -> str:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("scope") != "2fa" or not payload.get("pre_auth"):
+            raise JWTError("wrong scope")
+        return payload["pre_auth"]
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Login session expired. Please sign in again.")
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -427,44 +450,6 @@ async def require_permission(required_perm: str, email: str):
         status_code=403, 
         detail=f"Security access restricted. Permission '{required_perm}' required."
     )
-
-async def send_otp_email(to_email: str, otp: str):
-    # Use Resend API (Bypasses DigitalOcean port blocks)
-    api_key = os.getenv("RESEND_API_KEY_OTP") or os.getenv("RESEND_API_KEY")
-    sender_email = "security@lumopulse.us" # Verified domain in Resend
-    
-    url = "https://api.resend.com/emails"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "from": f"Lumo Security <{sender_email}>",
-        "to": [to_email],
-        "subject": "Your Pulse AI Verification Code",
-        "html": f"""
-            <div style="font-family: sans-serif; padding: 20px; color: #333;">
-                <h2 style="color: #a855f7;">Security Verification</h2>
-                <p>Your 6-digit verification code is:</p>
-                <h1 style="background: #f3f4f6; padding: 10px; display: inline-block; letter-spacing: 5px;">{otp}</h1>
-                <p>This code expires in 10 minutes.</p>
-            </div>
-        """
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(url, headers=headers, json=payload, timeout=10)
-            if res.status_code in [200, 201]:
-                return True
-            else:
-                logger.error(f"Resend Error: {res.text}")
-                # Fallback: Still print to logs so you can log in if API fails
-                logger.warning(f"⚠️ [API FAIL] OTP for {to_email}: {otp}")
-                return False
-    except Exception as e:
-        logger.error(f"Failed to send email via Resend: {e}")
-        return False
 
 # --- Public Endpoints ---
 
@@ -690,29 +675,52 @@ async def login(
         await track_failed_login(email)
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     
-    # 4. Success - Reset failures and start 2FA
-    await reset_failed_login(email)
-    
-    # Generate and send OTP
-    otp = ''.join(random.choices(string.digits, k=6))
-    await save_otp(email, otp)
-    
-    sent = await send_otp_email(email, otp)
-    if not sent:
-        # Fallback for dev/blocked ports: log it
-        logger.warning(f"OTP for {email}: {otp}")
-    
-    return {
-        "status": "2fa_required",
-        "message": "Verification code sent to your email."
-    }
+    # 4. Password OK - hand back a short-lived pre-auth token; the authenticator code finishes login.
+    # (Failed-login counters are reset only once the authenticator code is verified.)
+    pre_auth_token = create_pre_auth_token(email)
+    if user.get("totp_secret"):
+        return {"status": "2fa_required", "mode": "totp", "pre_auth_token": pre_auth_token}
+
+    # First login since the switch from email codes: user must scan a QR code to enroll
+    return {"status": "2fa_setup_required", "mode": "totp", "pre_auth_token": pre_auth_token}
+
+@app.post("/auth/totp/setup")
+async def totp_setup(request: TotpSetupRequest):
+    """Start authenticator enrollment: returns the secret + otpauth URI to render as a QR code."""
+    email = decode_pre_auth_token(request.pre_auth_token)
+    user = await get_admin_user(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Access denied.")
+    if user.get("totp_secret"):
+        raise HTTPException(status_code=400, detail="Authenticator already set up. Ask an admin to reset it if you lost access.")
+
+    secret = totp.generate_secret()
+    await set_totp_pending_secret(email, secret)
+    return {"secret": secret, "otpauth_uri": totp.provisioning_uri(secret, email)}
 
 @app.post("/auth/verify-2fa")
 async def verify_login_2fa(request: Verify2FARequest):
-    if await verify_otp(request.email, request.otp):
-        # Fetch user info to return to frontend
-        user = await get_admin_user(request.email)
-        access_token = create_access_token(data={"sub": request.email})
+    email = decode_pre_auth_token(request.pre_auth_token)
+
+    is_locked, locked_until = await is_account_locked(email)
+    if is_locked:
+        wait_mins = int((locked_until - datetime.utcnow()).total_seconds() / 60)
+        raise HTTPException(status_code=403, detail=f"Account locked. Try again in {max(1, wait_mins)} minutes.")
+
+    user = await get_admin_user(email)
+    if not user:
+        raise HTTPException(status_code=401, detail="Access denied.")
+
+    enrolled_secret = user.get("totp_secret")
+    pending_secret = user.get("totp_pending_secret")
+    secret = enrolled_secret or pending_secret
+
+    if secret and totp.verify_code(secret, request.otp):
+        if not enrolled_secret:
+            # First successful scan confirms enrollment
+            await enable_totp(email, pending_secret)
+        await reset_failed_login(email)
+        access_token = create_access_token(data={"sub": email})
         return {
             "access_token": access_token, 
             "token_type": "bearer", 
@@ -724,8 +732,9 @@ async def verify_login_2fa(request: Verify2FARequest):
                 "permissions": user.get("permissions", ["chat", "knowledge"])
             }
         }
-    
-    raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+
+    await track_failed_login(email)  # brute-forcing the 6-digit code triggers the same lockout as passwords
+    raise HTTPException(status_code=400, detail="Invalid authenticator code")
 
 @app.post("/auth/signup")
 async def signup(request: SignupRequest):
@@ -773,6 +782,13 @@ async def update_staff_endpoint(request: SignupRequest, email: str = Depends(get
         "permissions": request.permissions,
         "role": request.role
     })
+    return {"status": "success"}
+
+@app.post("/staff/reset-2fa", dependencies=[Depends(get_current_user)])
+async def reset_staff_2fa(request: ResetTotpRequest, email: str = Depends(get_current_user)):
+    """For staff who lost their phone: forces a fresh QR enrollment on their next login."""
+    await require_permission("all", email)
+    await reset_totp(request.email)
     return {"status": "success"}
 
 @app.delete("/staff/{target_email}", dependencies=[Depends(get_current_user)])
@@ -1280,18 +1296,13 @@ async def upload_avatar_endpoint(file: UploadFile = File(...), current_user: str
         await update_admin_profile(current_user, profile["name"], profile["email"], avatar_url=avatar_url)
         return {"status": "success", "avatar_url": avatar_url}
 
-@app.post("/auth/request-password-otp")
-async def request_otp_endpoint(current_user: str = Depends(get_current_user)):
-    otp = ''.join(random.choices(string.digits, k=6))
-    await save_otp(current_user, otp)
-    return {"status": "success", "message": "Code sent"}
-
 @app.post("/update-password")
 async def update_password_endpoint(request: PasswordUpdateRequest, current_user: str = Depends(get_current_user)):
-    if await verify_otp(current_user, request.otp):
+    user = await get_admin_user(current_user)
+    if user and totp.verify_code(user.get("totp_secret"), request.otp):
         await update_admin_password(current_user, request.new_password)
         return {"status": "success"}
-    raise HTTPException(status_code=400, detail="Invalid OTP")
+    raise HTTPException(status_code=400, detail="Invalid authenticator code")
 
 @app.get("/preferences")
 async def get_prefs(current_user: str = Depends(get_current_user)):

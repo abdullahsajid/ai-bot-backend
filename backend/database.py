@@ -447,6 +447,22 @@ async def verify_otp(email: str, otp: str):
     await otp_collection.delete_one({"email": email})
     return True
 
+async def set_totp_pending_secret(email: str, secret: str):
+    await admins_collection.update_one({"email": email}, {"$set": {"totp_pending_secret": secret}})
+
+async def enable_totp(email: str, secret: str):
+    await admins_collection.update_one(
+        {"email": email},
+        {"$set": {"totp_secret": secret, "is_2fa_enabled": True}, "$unset": {"totp_pending_secret": ""}}
+    )
+
+async def reset_totp(email: str):
+    """Remove authenticator enrollment so the user re-scans a new QR code on next login."""
+    await admins_collection.update_one(
+        {"email": email},
+        {"$set": {"is_2fa_enabled": False}, "$unset": {"totp_secret": "", "totp_pending_secret": ""}}
+    )
+
 async def create_admin(email, password, name="Staff Member", role="SUPPORT AGENT", permissions=None, avatar_url=""):
     # Check if exists
     existing = await admins_collection.find_one({"email": email})
@@ -474,7 +490,7 @@ async def create_admin(email, password, name="Staff Member", role="SUPPORT AGENT
 
 
 async def get_all_staff():
-    cursor = admins_collection.find({}, {"password": 0}) # Don't return passwords
+    cursor = admins_collection.find({}, {"password": 0, "totp_secret": 0, "totp_pending_secret": 0}) # Don't return passwords or 2FA secrets
     staff = await cursor.to_list(length=100)
     for s in staff:
         s["_id"] = str(s["_id"])
