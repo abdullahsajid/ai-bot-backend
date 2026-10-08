@@ -221,27 +221,27 @@ async def telegram_lumo_security_notice_loop(bot):
     settings = db["system_settings"]
     
     security_text = (
-        "🔒 *Important Security Notice from Lumo Wallet*\n\n"
-        "Dear Lumo Wallet community,\n\n"
-        "We want to make our position clear regarding recent misinformation circulating online involving unauthorized use of the Lumo Wallet name and branding.\n\n"
-        "Lumo Wallet *does not have an official token* and we have not created, launched, or endorsed any cryptocurrency token. Any token or project claiming to be affiliated with Lumo Wallet is not authorized by us.\n\n"
-        "To help protect our users and provide greater transparency, we have added a *security notice on our official website*. This notice links to a detailed post explaining:\n\n"
-        "✅ *The services Lumo Wallet does provide*\n"
+        "🔒 Important Security Notice from Lumo Wallet\n\n"
+        "Dear Lumo Wallet Community,\n\n"
+        "We want to address recent misinformation and unauthorized use of the Lumo Wallet name and branding.\n\n"
+        "Lumo Wallet does not have an official token. We have never created, launched, or endorsed any cryptocurrency token. Any project claiming otherwise is not affiliated with us.\n\n"
+        "For transparency, we have added a security notice to our official website explaining:\n\n"
+        "✅ What Lumo Wallet provides:\n"
         "• On/off-ramp solutions\n"
-        "• Swap services\n"
-        "• Card services\n"
-        "• Staking services\n"
+        "• Swap and Card services\n"
+        "• Staking and Loans\n"
+        "• Stocks and ETFs\n"
+        "• NFT Marketplace\n"
         "• Secure wallet infrastructure\n\n"
-        "❌ *The services Lumo Wallet does not provide*\n"
+        "❌ What Lumo Wallet does NOT provide:\n"
         "• Token creation or issuance\n"
         "• Third-party token endorsements\n"
         "• Investment schemes or guaranteed returns\n"
         "• Requests for private keys or recovery phrases\n\n"
-        "We encourage everyone to always verify information through our official channels and remain cautious when interacting with any crypto-related project.\n\n"
-        "Before using any digital asset service or investing in any token, always do your own research, verify sources, and understand the risks involved.\n\n"
-        "Your security and trust remain our priority.\n\n"
+        "Always verify information through our official channels and do your own research before investing.\n\n"
+        "Your security remains our priority.\n\n"
         "Stay safe,\n"
-        "*The Lumo Wallet Team*"
+        "The Lumo Wallet Team"
     )
     
     image_path = os.path.join(os.path.dirname(__file__), "assets", "security-notice.png")
@@ -274,25 +274,18 @@ async def telegram_lumo_security_notice_loop(bot):
                     for gid in group_ids:
                         try:
                             if os.path.exists(image_path):
+                                # security_text is kept under Telegram's 1024-char photo
+                                # caption limit, so image + text go out as one message.
                                 with open(image_path, "rb") as photo_file:
-                                    # Send photo first with a short caption to avoid 1024-char caption limit
                                     await bot.send_photo(
                                         chat_id=gid,
                                         photo=photo_file,
-                                        caption="🔒 *Important Security Notice from Lumo Wallet*",
-                                        parse_mode="Markdown"
+                                        caption=security_text
                                     )
-                                # Send the detailed text right after as a separate message
-                                await bot.send_message(
-                                    chat_id=gid,
-                                    text=security_text,
-                                    parse_mode="Markdown"
-                                )
                             else:
                                 await bot.send_message(
                                     chat_id=gid,
-                                    text=security_text,
-                                    parse_mode="Markdown"
+                                    text=security_text
                                 )
                             print(f"✅ [TELEGRAM] Sent Lumo Wallet security announcement to group {gid}")
                             sent_any = True
